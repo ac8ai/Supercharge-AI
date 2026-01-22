@@ -1,0 +1,16 @@
+# Ignore everything by default
+*
+
+# Track config
+!.gitignore
+!pyproject.toml
+!CLAUDE.md
+!README.md
+
+# Track source code
+!src/
+!src/**
+
+# Track tests
+!tests/
+!tests/**
