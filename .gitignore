@@ -1,16 +1,24 @@
-# Ignore everything by default
 *
 
-# Track config
+!src/
+!src/**
+
+!tests/
+!tests/**
+
+!agents/
+!agents/**
+
+!templates/
+!templates/**
+
 !.gitignore
 !pyproject.toml
 !CLAUDE.md
 !README.md
+!ARCHITECTURE.md
+!orchestrator.md
 
-# Track source code
-!src/
-!src/**
-
-# Track tests
-!tests/
-!tests/**
+**/__pycache__/
+**/*.pyc
+**/*.pyo
