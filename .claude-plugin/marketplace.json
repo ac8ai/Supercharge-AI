@@ -1,0 +1,20 @@
+{
+  "name": "ac8-plugins",
+  "owner": {
+    "name": "Tom Bukic",
+    "email": "tom@ac8.ai"
+  },
+  "metadata": {
+    "description": "Multi-agent orchestration plugins for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "supercharge-ai",
+      "source": ".",
+      "description": "Multi-agent framework for Claude Code — recursive self-delegation, persistent memory, per-agent tool permissions",
+      "version": "0.1.0",
+      "keywords": ["agents", "orchestration", "workflow", "multi-agent", "memory"],
+      "category": "productivity"
+    }
+  ]
+}
