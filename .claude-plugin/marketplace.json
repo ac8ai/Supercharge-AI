@@ -10,7 +10,10 @@
   "plugins": [
     {
       "name": "supercharge-ai",
-      "source": ".",
+      "source": {
+        "source": "github",
+        "repo": "ac8ai/Supercharge-AI"
+      },
       "description": "Multi-agent framework for Claude Code — recursive self-delegation, persistent memory, per-agent tool permissions",
       "version": "0.1.0",
       "keywords": ["agents", "orchestration", "workflow", "multi-agent", "memory"],
