@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.sh",
+            "statusMessage": "[SuperchargeAI] Initializing"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "supercharge hook-subagent-start",
+            "statusMessage": "[SuperchargeAI] Injecting agent protocol"
+          }
+        ]
+      }
+    ]
+  }
+}

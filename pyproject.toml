@@ -6,10 +6,10 @@ authors = [
     { name = "Tom Bukic", email = "tom@ac8.ai" },
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["click>=8.3", "claude-agent-sdk>=0.1"]
 
 [project.scripts]
-supercharge-hello = "agent.hello:main"
+supercharge = "agent.cli:supercharge"
 
 [project.optional-dependencies]
 dev = [

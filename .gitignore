@@ -12,12 +12,18 @@
 !templates/
 !templates/**
 
+!prompts/
+!prompts/**
+
+!hooks/
+!hooks/**
+
+!.claude-plugin/
+!.claude-plugin/**
+
 !.gitignore
 !pyproject.toml
-!CLAUDE.md
 !README.md
-!ARCHITECTURE.md
-!orchestrator.md
 
 **/__pycache__/
 **/*.pyc

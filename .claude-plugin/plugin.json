@@ -1,0 +1,11 @@
+{
+  "name": "supercharge-ai",
+  "description": "Multi-agent framework for Claude Code",
+  "version": "0.1.0",
+  "author": {
+    "name": "Tom Bukic",
+    "email": "tom@ac8.ai"
+  },
+  "repository": "https://github.com/ac8ai/Supercharge-AI",
+  "keywords": ["agents", "orchestration", "workflow"]
+}
