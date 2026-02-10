@@ -10,10 +10,23 @@ if ! command -v uv &> /dev/null; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# Install supercharge CLI if missing
+SUPERCHARGE_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+# Read plugin version from plugin.json
+PLUGIN_VERSION=""
+if [ -f "${SUPERCHARGE_ROOT}/.claude-plugin/plugin.json" ]; then
+    PLUGIN_VERSION=$(python3 -c "import json; print(json.load(open('${SUPERCHARGE_ROOT}/.claude-plugin/plugin.json')).get('version',''))" 2>/dev/null)
+fi
+
+# Install or upgrade supercharge CLI from PyPI
 if ! command -v supercharge &> /dev/null; then
-    SUPERCHARGE_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-    uv tool install "${SUPERCHARGE_ROOT}" 2>/dev/null
+    uv tool install supercharge-ai 2>/dev/null
+else
+    # Upgrade if installed version doesn't match plugin version
+    INSTALLED_VERSION=$(supercharge version 2>/dev/null)
+    if [ -n "$PLUGIN_VERSION" ] && [ "$INSTALLED_VERSION" != "$PLUGIN_VERSION" ]; then
+        uv tool upgrade supercharge-ai 2>/dev/null
+    fi
 fi
 
 # Delegate to CLI (handles resume skip + prompt injection)

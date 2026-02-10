@@ -17,8 +17,39 @@ if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+def _data_dir() -> Path:
+    """Return the directory containing prompts/ and templates/.
+
+    Resolution order:
+    1. CLAUDE_PLUGIN_ROOT (set by Claude Code during hook execution)
+    2. SUPERCHARGE_ROOT (user-configurable via settings.json env)
+    3. Package data (PyPI install — prompts/templates bundled in wheel)
+    4. Dev source tree (running from git checkout)
+    5. Claude Code plugin cache (~/.claude/plugins/cache/)
+    """
+    for var in ("CLAUDE_PLUGIN_ROOT", "SUPERCHARGE_ROOT"):
+        val = os.environ.get(var)
+        if val:
+            return Path(val)
+
+    pkg_data = Path(__file__).resolve().parent / "data"
+    if (pkg_data / "prompts").is_dir():
+        return pkg_data
+
+    dev_root = Path(__file__).resolve().parents[2]
+    if (dev_root / "prompts").is_dir():
+        return dev_root
+
+    plugins_cache = Path.home() / ".claude" / "plugins" / "cache"
+    if plugins_cache.is_dir():
+        for marketplace_dir in plugins_cache.iterdir():
+            sa_dir = marketplace_dir / "supercharge-ai"
+            if sa_dir.is_dir():
+                for version_dir in sorted(sa_dir.iterdir(), reverse=True):
+                    if (version_dir / "prompts").is_dir():
+                        return version_dir
+
+    return dev_root
 
 
 def _task_root() -> Path:
@@ -35,7 +66,7 @@ def _task_root() -> Path:
 
 def _copy_template(name: str, dest: Path) -> None:
     """Copy a template file from templates/ to dest."""
-    src = _repo_root() / "templates" / name
+    src = _data_dir() / "templates" / name
     if src.exists():
         dest.write_text(src.read_text())
     else:
@@ -230,6 +261,14 @@ def _find_worker_file(worker_id: str) -> Path | None:
 @click.group()
 def supercharge():
     """SuperchargeAI - multi-agent framework for Claude Code."""
+
+
+@supercharge.command("version")
+def version_cmd():
+    """Print installed version."""
+    from supercharge import __version__
+
+    click.echo(__version__)
 
 
 # ── task ─────────────────────────────────────────────────────────────────────
@@ -567,7 +606,7 @@ def flatten(
     input_file: Path, output_file: Path | None, max_depth: int,
 ) -> None:
     """Resolve @path imports in markdown files into a single document."""
-    from agent.flatten import flatten_file
+    from supercharge.flatten import flatten_file
 
     result = flatten_file(input_file, output_file, max_depth=max_depth)
 
@@ -595,8 +634,30 @@ def _emit_hook(hook_event: str, content: str) -> None:
 
 def _read_prompt(name: str) -> str:
     """Read a prompt file, return empty string if missing."""
-    path = _repo_root() / "prompts" / name
+    path = _data_dir() / "prompts" / name
     return path.read_text() if path.exists() else ""
+
+
+def _check_version_sync() -> str | None:
+    """Compare installed CLI version against plugin.json. Return warning or None."""
+    from supercharge import __version__ as cli_version
+
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if not plugin_root:
+        return None
+    plugin_json = Path(plugin_root) / ".claude-plugin" / "plugin.json"
+    if not plugin_json.exists():
+        return None
+    try:
+        plugin_version = json.loads(plugin_json.read_text()).get("version", "")
+    except (json.JSONDecodeError, OSError):
+        return None
+    if plugin_version and plugin_version != cli_version:
+        return (
+            f"[SuperchargeAI] Version mismatch: CLI={cli_version}, plugin={plugin_version}. "
+            f"Run: uv tool upgrade supercharge-ai"
+        )
+    return None
 
 
 @supercharge.command("hook-session-start", hidden=True)
@@ -606,6 +667,10 @@ def hook_session_start():
 
     if input_data.get("source") == "resume":
         return
+
+    warning = _check_version_sync()
+    if warning:
+        click.echo(warning, err=True)
 
     parts = [_read_prompt("protocol.md"), _read_prompt("orchestrator.md")]
     content = "\n".join(p for p in parts if p)

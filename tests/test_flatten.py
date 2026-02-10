@@ -2,9 +2,7 @@
 
 from pathlib import Path
 
-import pytest
-
-from agent.flatten import flatten_imports, is_inside_code_block, resolve_path
+from supercharge.flatten import flatten_imports, is_inside_code_block, resolve_path
 
 
 class TestResolvePath:

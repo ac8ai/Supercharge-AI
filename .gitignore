@@ -21,10 +21,14 @@
 !.claude-plugin/
 !.claude-plugin/**
 
+!.github/
+!.github/**
+
 !.gitignore
 !pyproject.toml
 !uv.lock
 !README.md
+!LICENSE
 
 **/__pycache__/
 **/*.pyc
