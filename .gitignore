@@ -23,6 +23,7 @@
 
 !.gitignore
 !pyproject.toml
+!uv.lock
 !README.md
 
 **/__pycache__/
