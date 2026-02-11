@@ -17,28 +17,17 @@ if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
 
-def _data_dir() -> Path:
-    """Return the directory containing prompts/ and templates/.
+def _hook_data_dir() -> Path:
+    """Return data directory for hook execution (prompts/).
 
-    Resolution order:
-    1. CLAUDE_PLUGIN_ROOT (set by Claude Code during hook execution)
-    2. SUPERCHARGE_ROOT (user-configurable via settings.json env)
-    3. Package data (PyPI install — prompts/templates bundled in wheel)
-    4. Dev source tree (running from git checkout)
-    5. Claude Code plugin cache (~/.claude/plugins/cache/)
+    Hooks run with CLAUDE_PLUGIN_ROOT set by Claude Code, so the plugin
+    directory is the primary source. Falls back to SUPERCHARGE_ROOT, then
+    the plugin cache.
     """
     for var in ("CLAUDE_PLUGIN_ROOT", "SUPERCHARGE_ROOT"):
         val = os.environ.get(var)
         if val:
             return Path(val)
-
-    pkg_data = Path(__file__).resolve().parent / "data"
-    if (pkg_data / "prompts").is_dir():
-        return pkg_data
-
-    dev_root = Path(__file__).resolve().parents[2]
-    if (dev_root / "prompts").is_dir():
-        return dev_root
 
     plugins_cache = Path.home() / ".claude" / "plugins" / "cache"
     if plugins_cache.is_dir():
@@ -49,7 +38,30 @@ def _data_dir() -> Path:
                     if (version_dir / "prompts").is_dir():
                         return version_dir
 
-    return dev_root
+    # Last resort: fall through to CLI resolution
+    return _cli_data_dir()
+
+
+def _cli_data_dir() -> Path:
+    """Return data directory for CLI commands (prompts/ and templates/).
+
+    CLI commands (task init, subtask init) run in Bash where
+    CLAUDE_PLUGIN_ROOT is NOT reliably available. The installed package
+    data is the primary source.
+    """
+    val = os.environ.get("SUPERCHARGE_ROOT")
+    if val:
+        return Path(val)
+
+    pkg_data = Path(__file__).resolve().parent / "data"
+    if (pkg_data / "prompts").is_dir():
+        return pkg_data
+
+    dev_root = Path(__file__).resolve().parents[2]
+    if (dev_root / "prompts").is_dir():
+        return dev_root
+
+    return pkg_data
 
 
 def _task_root() -> Path:
@@ -66,7 +78,7 @@ def _task_root() -> Path:
 
 def _copy_template(name: str, dest: Path) -> None:
     """Copy a template file from templates/ to dest."""
-    src = _data_dir() / "templates" / name
+    src = _cli_data_dir() / "templates" / name
     if src.exists():
         dest.write_text(src.read_text())
     else:
@@ -300,8 +312,9 @@ def task_init(agent_type: str):
 
 def _build_worker_system_prompt() -> str:
     """Compose the system prompt for Agent SDK workers."""
-    protocol = _read_prompt("protocol.md")
-    worker_role = _read_prompt("worker.md")
+    cli_dir = _cli_data_dir()
+    protocol = _read_prompt("protocol.md", cli_dir)
+    worker_role = _read_prompt("worker.md", cli_dir)
     parts = [p for p in (protocol, worker_role) if p]
     return f"<supercharge-ai>\n{''.join(parts)}\n</supercharge-ai>"
 
@@ -589,31 +602,6 @@ def subtask_resume(worker_id: str, prompt: str):
     click.echo(json.dumps(result))
 
 
-# ── flatten ──────────────────────────────────────────────────────────────────
-
-
-@supercharge.command()
-@click.argument(
-    "input_file", type=click.Path(exists=True, path_type=Path),
-)
-@click.argument(
-    "output_file", type=click.Path(path_type=Path), required=False,
-)
-@click.option(
-    "--max-depth", default=5, help="Maximum import recursion depth",
-)
-def flatten(
-    input_file: Path, output_file: Path | None, max_depth: int,
-) -> None:
-    """Resolve @path imports in markdown files into a single document."""
-    from supercharge.flatten import flatten_file
-
-    result = flatten_file(input_file, output_file, max_depth=max_depth)
-
-    if not output_file:
-        click.echo(result)
-
-
 # ── hooks (internal) ────────────────────────────────────────────────────────
 
 
@@ -632,9 +620,9 @@ def _emit_hook(hook_event: str, content: str) -> None:
     )
 
 
-def _read_prompt(name: str) -> str:
+def _read_prompt(name: str, data_dir: Path) -> str:
     """Read a prompt file, return empty string if missing."""
-    path = _data_dir() / "prompts" / name
+    path = data_dir / "prompts" / name
     return path.read_text() if path.exists() else ""
 
 
@@ -672,7 +660,8 @@ def hook_session_start():
     if warning:
         click.echo(warning, err=True)
 
-    parts = [_read_prompt("protocol.md"), _read_prompt("orchestrator.md")]
+    hook_dir = _hook_data_dir()
+    parts = [_read_prompt("protocol.md", hook_dir), _read_prompt("orchestrator.md", hook_dir)]
     content = "\n".join(p for p in parts if p)
 
     if content:
@@ -684,6 +673,6 @@ def hook_subagent_start():
     """SubagentStart hook: inject shared protocol into agents."""
     json.load(sys.stdin)
 
-    content = _read_prompt("protocol.md")
+    content = _read_prompt("protocol.md", _hook_data_dir())
     if content:
         _emit_hook("SubagentStart", content)
