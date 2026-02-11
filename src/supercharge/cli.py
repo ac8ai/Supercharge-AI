@@ -64,16 +64,28 @@ def _cli_data_dir() -> Path:
     return pkg_data
 
 
+def _project_dir() -> str:
+    """Resolve the project root directory.
+
+    Priority: CLAUDE_PROJECT_DIR env → git toplevel → cwd.
+    """
+    project = os.environ.get(_ENV_PROJECT_DIR)
+    if project:
+        return project
+    import subprocess
+
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return os.getcwd()
+
+
 def _task_root() -> Path:
     """Runtime task data lives in <project>/.claude/SuperchargeAI/."""
-    project = os.environ.get("CLAUDE_PROJECT_DIR")
-    if not project:
-        click.echo(
-            "CLAUDE_PROJECT_DIR is not set. Run from within Claude Code.",
-            err=True,
-        )
-        raise SystemExit(2)
-    return Path(project) / ".claude" / "SuperchargeAI"
+    return Path(_project_dir()) / ".claude" / "SuperchargeAI"
 
 
 def _copy_template(name: str, dest: Path) -> None:
@@ -102,6 +114,8 @@ def _find_task_dir(task_uuid: str) -> Path | None:
 _DEFAULT_MAX_RECURSION_DEPTH = 5
 _ENV_MAX_DEPTH = "SUPERCHARGE_MAX_RECURSION_DEPTH"
 _ENV_REMAINING = "SUPERCHARGE_RECURSION_REMAINING"
+_ENV_TASK_UUID = "SUPERCHARGE_TASK_UUID"
+_ENV_PROJECT_DIR = "CLAUDE_PROJECT_DIR"
 
 _DEFAULT_FAST_MODELS = {"haiku"}
 _ENV_FAST_MODELS = "SUPERCHARGE_FAST_MODELS"
@@ -385,11 +399,14 @@ def _build_deep_worker_prompt(
     remaining_depth: int,
 ) -> str:
     """Compose the initial prompt sent to a deep worker."""
-    if remaining_depth > 1:
+    task_uuid = task_dir.name
+    budget = remaining_depth - 1
+    if budget > 0:
         depth_note = (
-            f"Recursion budget: {remaining_depth - 1} levels remaining."
-            " You may spawn sub-workers via "
-            "`supercharge subtask init`."
+            f"Recursion budget: {budget} levels remaining. "
+            f"To spawn sub-workers: "
+            f'`supercharge subtask init <agent_type> "<prompt>" --model <model>` '
+            f"(SUPERCHARGE_TASK_UUID is auto-set in your env)"
         )
     else:
         depth_note = (
@@ -452,7 +469,7 @@ def _build_options(
     """
     from claude_agent_sdk import ClaudeAgentOptions
 
-    project_root = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    project_root = os.environ.get(_ENV_PROJECT_DIR) or _project_dir()
     perms = _AGENT_PERMISSIONS.get(agent_type, _DEFAULT_PERMS)
 
     if worker_id is not None:
@@ -473,7 +490,11 @@ def _build_options(
         permission_mode="acceptEdits",
         max_turns=max_turns,
         model=model,
-        env={_ENV_REMAINING: str(remaining_depth - 1)},
+        env={
+            _ENV_REMAINING: str(remaining_depth - 1),
+            _ENV_TASK_UUID: task_dir.name,
+            _ENV_PROJECT_DIR: project_root,
+        },
     )
 
 
@@ -524,11 +545,21 @@ async def _deep_worker_init(
     return {"worker_id": worker_id, "result": result_msg.result}
 
 
-async def _deep_worker_resume(worker_id: str, prompt: str) -> dict:
-    """Resume a deep worker. worker_id IS the session_id."""
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+async def _deep_worker_resume(
+    worker_id: str,
+    prompt: str,
+    task_dir: Path,
+    agent_type: str,
+) -> dict:
+    """Resume a deep worker with full options restored."""
+    from claude_agent_sdk import ResultMessage, query
 
-    options = ClaudeAgentOptions(resume=worker_id)
+    remaining = _get_remaining_depth()
+    options = _build_options(
+        task_dir, remaining, max_turns=None, model=None,
+        agent_type=agent_type, worker_id=worker_id,
+    )
+    options.resume = worker_id
 
     result_msg = None
     async for message in query(prompt=prompt, options=options):
@@ -589,23 +620,42 @@ def subtask():
 
 
 @subtask.command("init")
-@click.argument("task_uuid")
 @click.argument("agent_type")
 @click.argument("prompt")
 @click.option(
-    "--max-turns", default=None, type=int, help="Cap on agentic turns",
+    "--task-uuid", envvar=_ENV_TASK_UUID, default=None,
+    help="Parent task UUID (agents pass this; workers get it from env).",
 )
+# @click.option("--max-turns", ...)  # now read from env
 @click.option(
     "--model", default=None, help="Model override (sonnet, opus, haiku)",
 )
 def subtask_init(
-    task_uuid: str,
     agent_type: str,
     prompt: str,
-    max_turns: int | None,
+    task_uuid: str | None,
+    # max_turns: read from SUPERCHARGE_MAX_TURNS env var
     model: str | None,
 ):
     """Spawn a new Agent SDK worker on a task. Prints JSON {worker_id, result}."""
+    # Resolve task UUID: --task-uuid flag > SUPERCHARGE_TASK_UUID env var
+    # Click's envvar= already handles the fallback, so task_uuid may come
+    # from either source. Validate consistency if both are present.
+    env_uuid = os.environ.get(_ENV_TASK_UUID)
+    if task_uuid and env_uuid and task_uuid != env_uuid:
+        raise click.ClickException(
+            f"--task-uuid ({task_uuid}) conflicts with "
+            f"{_ENV_TASK_UUID} env var ({env_uuid})."
+        )
+    if not task_uuid:
+        raise click.ClickException(
+            f"Task UUID required. Pass --task-uuid or set {_ENV_TASK_UUID}."
+        )
+
+    # Resolve max_turns from env (optional)
+    max_turns_str = os.environ.get("SUPERCHARGE_MAX_TURNS")
+    max_turns = int(max_turns_str) if max_turns_str else None
+
     fast = _is_fast_mode(model)
 
     if not fast:
@@ -656,7 +706,14 @@ def subtask_resume(worker_id: str, prompt: str):
             "Only deep workers (opus/sonnet) can be resumed."
         )
 
-    result = asyncio.run(_deep_worker_resume(worker_id, prompt))
+    # Derive task_dir and agent_type from worker file path:
+    # <task_root>/<agent_type>/<uuid>/workers/<worker_id>.md
+    task_dir = worker_file.parent.parent
+    agent_type = task_dir.parent.name
+
+    result = asyncio.run(
+        _deep_worker_resume(worker_id, prompt, task_dir, agent_type)
+    )
     click.echo(json.dumps(result))
 
 

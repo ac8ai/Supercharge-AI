@@ -41,12 +41,12 @@ Remove the SuperchargeAI include line from CLAUDE.md.
 
 Create a new task workspace. Prints the UUID.
 
-### `supercharge subtask init <task_uuid> <agent_type> <prompt>`
+### `supercharge subtask init <agent_type> <prompt>`
 
 Spawn a new Agent SDK worker on a task. Returns JSON `{worker_id, result}`.
 
 Options:
-- `--max-turns N` — cap on agentic turns
+- `--task-uuid UUID` — parent task UUID (agents pass this; workers get it from `SUPERCHARGE_TASK_UUID` env var automatically)
 - `--model MODEL` — model override (sonnet, opus, haiku)
 
 ### `supercharge subtask resume <worker_id> <prompt>`
@@ -218,8 +218,13 @@ callback then scopes *where* they can write.
 The `can_use_tool` callback also blocks `supercharge task init` in Bash
 for all workers — only the orchestrator creates task workspaces.
 
+## Developer Docs
+
+See [docs/stack-propagation.md](docs/stack-propagation.md) for details on how env vars, context, and identifiers flow through the orchestrator → agent → worker → sub-worker stack.
+
 ## TODO
 
-- [ ] **`CLAUDE_PROJECT_DIR` not available in Bash environment.** Claude Code does not set `CLAUDE_PROJECT_DIR` for Bash tool invocations — only `CLAUDECODE=1`, `CLAUDE_AGENT_SDK_VERSION`, and `CLAUDE_CODE_ENTRYPOINT` are provided. This means `supercharge task init`, `supercharge subtask init`, and `supercharge subtask resume` all fail unless the orchestrator manually prepends `CLAUDE_PROJECT_DIR=<path>`. Options: (a) fall back to `git rev-parse --show-toplevel` or `pwd` when unset, (b) add it to `settings.json` env, (c) have the orchestrator prompt explicitly instruct prefixing it.
+- [x] ~~`CLAUDE_PROJECT_DIR` not available in Bash environment~~ — Resolved: `_project_dir()` falls back to `git rev-parse --show-toplevel` → cwd. `_build_options()` resolves and propagates `CLAUDE_PROJECT_DIR` to all child workers.
+- [x] ~~Env var propagation for task UUID~~ — Resolved: `SUPERCHARGE_TASK_UUID` propagated via env dict; agents pass `--task-uuid` flag, workers inherit from env automatically.
 - [ ] End-to-end integration test
 - [ ] CLI test suite

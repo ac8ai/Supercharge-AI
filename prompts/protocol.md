@@ -159,7 +159,7 @@ Agents delegate low-level work to workers via the `supercharge` CLI.
 
 **Spawning a worker:**
 ```
-supercharge subtask init <task_uuid> <agent_type> "<prompt>" --model <model>
+supercharge subtask init <agent_type> "<prompt>" --task-uuid <task_uuid> --model <model>
 ```
 Returns JSON: `{"worker_id": "...", "result": "..."}` or `{"worker_id": "...", "error": "..."}`.
 

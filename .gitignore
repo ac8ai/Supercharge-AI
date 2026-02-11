@@ -18,6 +18,9 @@
 !hooks/
 !hooks/**
 
+!docs/
+!docs/**
+
 !.claude-plugin/
 !.claude-plugin/**
 
