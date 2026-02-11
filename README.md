@@ -12,6 +12,8 @@ claude plugin install supercharge-ai --plugin-dir ~/.claude/Supercharge-AI
 
 On first session start, the plugin auto-installs `uv` and the `supercharge` CLI if missing. Prompts are injected automatically via SessionStart and SubagentStart hooks.
 
+**Recommended:** After installing, run `supercharge init` in each project to add the SuperchargeAI `@path` include to your CLAUDE.md. This ensures Claude Code prioritizes SuperchargeAI methodology over its default patterns.
+
 ## Architecture
 
 **Three-layer system:**
@@ -26,6 +28,14 @@ Workers use Agent SDK instead of `claude -p` for:
 - Recursion depth tracking via environment variables
 
 ## Commands
+
+### `supercharge init`
+
+Add SuperchargeAI `@path` include line to the project's CLAUDE.md. Idempotent — skips if already present. Use `--project-dir` to target a specific project.
+
+### `supercharge deinit`
+
+Remove the SuperchargeAI include line from CLAUDE.md.
 
 ### `supercharge task init <agent_type>`
 

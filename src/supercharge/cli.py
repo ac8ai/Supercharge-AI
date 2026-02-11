@@ -283,6 +283,64 @@ def version_cmd():
     click.echo(__version__)
 
 
+# ── init / deinit ────────────────────────────────────────────────────────────
+
+_SUPERCHARGE_MARKER = "supercharge-ai"
+
+
+def _find_claude_md(project_dir: str | None = None) -> Path:
+    """Locate CLAUDE.md in the project's .claude/ directory."""
+    root = Path(project_dir) if project_dir else Path.cwd()
+    return root / ".claude" / "CLAUDE.md"
+
+
+@supercharge.command()
+@click.option("--project-dir", default=None, help="Project root (default: cwd)")
+def init(project_dir: str | None):
+    """Add SuperchargeAI include line to the project's CLAUDE.md."""
+    claude_md = _find_claude_md(project_dir)
+
+    if claude_md.exists() and _SUPERCHARGE_MARKER in claude_md.read_text():
+        click.echo("Already configured — CLAUDE.md contains supercharge-ai reference.")
+        return
+
+    # Resolve the absolute path to claude-md.md template
+    data_dir = _cli_data_dir()
+    template_path = data_dir / "prompts" / "claude-md.md"
+    if not template_path.exists():
+        raise click.ClickException(f"Template not found: {template_path}")
+
+    include_line = f"\nSupercharge-AI: @{template_path}\n"
+
+    claude_md.parent.mkdir(parents=True, exist_ok=True)
+    with claude_md.open("a") as f:
+        f.write(include_line)
+
+    click.echo(f"Added to {claude_md}:")
+    click.echo(f"  Supercharge-AI: @{template_path}")
+
+
+@supercharge.command()
+@click.option("--project-dir", default=None, help="Project root (default: cwd)")
+def deinit(project_dir: str | None):
+    """Remove SuperchargeAI include line from the project's CLAUDE.md."""
+    claude_md = _find_claude_md(project_dir)
+
+    if not claude_md.exists():
+        click.echo("No CLAUDE.md found.")
+        return
+
+    lines = claude_md.read_text().splitlines(keepends=True)
+    filtered = [line for line in lines if _SUPERCHARGE_MARKER not in line]
+
+    if len(filtered) == len(lines):
+        click.echo("No supercharge-ai reference found in CLAUDE.md.")
+        return
+
+    claude_md.write_text("".join(filtered))
+    click.echo(f"Removed supercharge-ai reference from {claude_md}.")
+
+
 # ── task ─────────────────────────────────────────────────────────────────────
 
 
