@@ -713,9 +713,6 @@ def hook_session_start():
     """SessionStart hook: inject shared protocol + orchestrator prompt."""
     input_data = json.load(sys.stdin)
 
-    if input_data.get("source") == "resume":
-        return
-
     warning = _check_version_sync()
     if warning:
         click.echo(warning, err=True)
