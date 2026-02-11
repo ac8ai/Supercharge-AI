@@ -605,14 +605,16 @@ def subtask_resume(worker_id: str, prompt: str):
 # ── hooks (internal) ────────────────────────────────────────────────────────
 
 
-def _emit_hook(hook_event: str, content: str) -> None:
-    """Emit hook JSON with additionalContext."""
+def _emit_hook(hook_event: str, content: str, data_dir: Path) -> None:
+    """Emit hook JSON with additionalContext, prepending directive."""
+    directive = _read_prompt("directive.md", data_dir)
+    body = f"{directive}\n{content}" if directive else content
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": hook_event,
                 "additionalContext": (
-                    f"<supercharge-ai>\n{content}\n</supercharge-ai>"
+                    f"<supercharge-ai>\n{body}\n</supercharge-ai>"
                 ),
             }
         },
@@ -665,7 +667,7 @@ def hook_session_start():
     content = "\n".join(p for p in parts if p)
 
     if content:
-        _emit_hook("SessionStart", content)
+        _emit_hook("SessionStart", content, hook_dir)
 
 
 @supercharge.command("hook-subagent-start", hidden=True)
@@ -673,6 +675,7 @@ def hook_subagent_start():
     """SubagentStart hook: inject shared protocol into agents."""
     json.load(sys.stdin)
 
-    content = _read_prompt("protocol.md", _hook_data_dir())
+    hook_dir = _hook_data_dir()
+    content = _read_prompt("protocol.md", hook_dir)
     if content:
-        _emit_hook("SubagentStart", content)
+        _emit_hook("SubagentStart", content, hook_dir)
