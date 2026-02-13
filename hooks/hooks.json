@@ -21,6 +21,17 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "supercharge hook-pre-tool-use"
+          }
+        ]
+      }
     ]
   }
 }

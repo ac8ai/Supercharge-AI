@@ -2,8 +2,8 @@
 All levels of SuperchargeAI follow this protocol.
 
 <principles>
-- **Verify, don't assume.** Every level — orchestrator, agent, worker — must read files before acting on them. Never assume file contents, structure, or conventions. If a task references files, read them. If code exists, check it before proposing changes.
 - **MD context first.** All levels write questions, results, and decisions to markdown files immediately. Context windows are lost on restart — markdown files are the only persistent state.
+- **Verify content, trust tooling.** Read project files before acting on them — never assume file contents, structure, or conventions. But trust `supercharge` CLI outputs: assume commands succeed and folders are created correctly unless an error is returned.
 </principles>
 
 <roles>
@@ -189,6 +189,7 @@ Multi-line scripts go in `.claude/SuperchargeAI/scripts/` with `lowercase_name.e
 </scripts>
 
 <tips>
+- The `supercharge` CLI is always available when this protocol is active.
 - If WebSearch or WebFetch fails or is unavailable, fall back to CLI tools (`curl`, `wget`) via Bash. Do not abandon web retrieval on the first failure.
 </tips>
 </protocol>

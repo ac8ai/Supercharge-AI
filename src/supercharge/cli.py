@@ -120,6 +120,14 @@ _ENV_PROJECT_DIR = "CLAUDE_PROJECT_DIR"
 _DEFAULT_FAST_MODELS = {"haiku"}
 _ENV_FAST_MODELS = "SUPERCHARGE_FAST_MODELS"
 
+_SUPERCHARGE_WORKSPACE_MARKER = "/.claude/SuperchargeAI/"
+
+_SUPERCHARGE_PERMISSIONS = [
+    "Bash(supercharge *)",
+    "Write(.claude/SuperchargeAI/**)",
+    "Edit(.claude/SuperchargeAI/**)",
+]
+
 # ── Per-agent tool permissions ──────────────────────────────────────────────
 # deep_tools: allowed_tools for deep workers (opus/sonnet)
 # fast_tools: allowed_tools for fast workers (haiku) — always read-only
@@ -310,28 +318,46 @@ def _find_claude_md(project_dir: str | None = None) -> Path:
 
 @supercharge.command()
 @click.option("--project-dir", default=None, help="Project root (default: cwd)")
-def init(project_dir: str | None):
+@click.option(
+    "--add-permissions", is_flag=True, default=False,
+    help="Add tool permissions to ~/.claude/settings.json (needed for VS Code).",
+)
+def init(project_dir: str | None, add_permissions: bool):
     """Add SuperchargeAI include line to the project's CLAUDE.md."""
     claude_md = _find_claude_md(project_dir)
 
     if claude_md.exists() and _SUPERCHARGE_MARKER in claude_md.read_text():
         click.echo("Already configured — CLAUDE.md contains supercharge-ai reference.")
-        return
+    else:
+        # Resolve the absolute path to claude-md.md template
+        data_dir = _cli_data_dir()
+        template_path = data_dir / "prompts" / "claude-md.md"
+        if not template_path.exists():
+            raise click.ClickException(f"Template not found: {template_path}")
 
-    # Resolve the absolute path to claude-md.md template
-    data_dir = _cli_data_dir()
-    template_path = data_dir / "prompts" / "claude-md.md"
-    if not template_path.exists():
-        raise click.ClickException(f"Template not found: {template_path}")
+        include_line = f"\nSupercharge-AI: @{template_path}\n"
 
-    include_line = f"\nSupercharge-AI: @{template_path}\n"
+        claude_md.parent.mkdir(parents=True, exist_ok=True)
+        with claude_md.open("a") as f:
+            f.write(include_line)
 
-    claude_md.parent.mkdir(parents=True, exist_ok=True)
-    with claude_md.open("a") as f:
-        f.write(include_line)
+        click.echo(f"Added to {claude_md}:")
+        click.echo(f"  Supercharge-AI: @{template_path}")
 
-    click.echo(f"Added to {claude_md}:")
-    click.echo(f"  Supercharge-AI: @{template_path}")
+    if add_permissions:
+        settings_path = _user_settings_path()
+        added = _add_user_permissions(settings_path)
+        if added:
+            click.echo(f"\nAdded to {settings_path}:")
+            for entry in added:
+                click.echo(f"  {entry}")
+            click.echo(
+                "\nThese permissions are needed for VS Code where plugin hooks "
+                "don't fire yet (https://github.com/anthropics/claude-code/issues/18547)."
+            )
+            click.echo("Remove with: supercharge permissions remove")
+        else:
+            click.echo("\nPermissions already present in settings.json.")
 
 
 @supercharge.command()
@@ -353,6 +379,25 @@ def deinit(project_dir: str | None):
 
     claude_md.write_text("".join(filtered))
     click.echo(f"Removed supercharge-ai reference from {claude_md}.")
+
+
+# ── permissions ──────────────────────────────────────────────────────────────
+
+
+@supercharge.group()
+def permissions():
+    """Manage SuperchargeAI tool permissions in ~/.claude/settings.json."""
+
+
+@permissions.command("remove")
+def permissions_remove():
+    """Remove SuperchargeAI permission entries from ~/.claude/settings.json."""
+    settings_path = _user_settings_path()
+    removed = _remove_user_permissions(settings_path)
+    if removed:
+        click.echo(f"Removed {removed} SuperchargeAI permission(s) from {settings_path}.")
+    else:
+        click.echo("No SuperchargeAI permissions found in settings.json.")
 
 
 # ── task ─────────────────────────────────────────────────────────────────────
@@ -717,6 +762,87 @@ def subtask_resume(worker_id: str, prompt: str):
     click.echo(json.dumps(result))
 
 
+# ── PreToolUse permission helpers ───────────────────────────────────────────
+
+
+def _allow(reason: str) -> dict:
+    """Build a PreToolUse allow decision."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+def _deny(reason: str) -> dict:
+    """Build a PreToolUse deny decision."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+def _evaluate_task_call(tool_input: dict) -> dict | None:
+    """Evaluate a Task tool call for SuperchargeAI workspace enforcement.
+
+    Returns allow if the subagent is ours and the prompt references the workspace.
+    Returns deny if the subagent is ours but the workspace path is missing.
+    Returns None (pass-through) for non-SuperchargeAI subagents.
+    """
+    subagent_type = tool_input.get("subagent_type", "")
+    if not subagent_type.startswith("supercharge-ai:"):
+        return None
+
+    prompt = tool_input.get("prompt", "")
+    if _SUPERCHARGE_WORKSPACE_MARKER in prompt:
+        return _allow("Task: SuperchargeAI agent with workspace path")
+
+    return _deny("Task: SuperchargeAI agent missing workspace path in prompt.")
+
+
+def _evaluate_pre_tool_use(tool_name: str, tool_input: dict) -> dict | None:
+    """Evaluate a PreToolUse hook call. Returns allow/deny dict or None for pass-through.
+
+    Scope: fires for orchestrator and Task-tool subagents (Claude Code sessions).
+    Does NOT fire for Agent SDK workers (supercharge subtask init) — those use
+    the _make_can_use_tool() callback with separate write-scope enforcement.
+
+    Assumptions and known limitations:
+    - Bash: startswith("supercharge ") will match any binary named "supercharge".
+      No other such binary is known to exist. Will not match commands that merely
+      contain "supercharge" in the middle (e.g., "echo supercharge ...").
+    - Write/Edit: substring match on "/.claude/SuperchargeAI/" (with slashes).
+      False positive requires a project with that exact path segment outside of
+      SuperchargeAI's workspace — extremely unlikely in practice.
+    - Task: substring match on prompt text. Relies on orchestrator prompt rules
+      requiring the workspace path in every delegation prompt. A malformed prompt
+      without the path will be denied (fail-safe).
+    - None (pass-through) means we make no decision — Claude Code continues with
+      its normal permission flow (typically prompting the user).
+    """
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        if command.startswith("supercharge "):
+            return _allow("Bash: supercharge CLI command")
+        return None
+
+    if tool_name in ("Write", "Edit"):
+        file_path = tool_input.get("file_path", "")
+        if _SUPERCHARGE_WORKSPACE_MARKER in file_path:
+            return _allow(f"{tool_name}: SuperchargeAI workspace file")
+        return None
+
+    if tool_name == "Task":
+        return _evaluate_task_call(tool_input)
+
+    return None
+
+
 # ── hooks (internal) ────────────────────────────────────────────────────────
 
 
@@ -791,3 +917,66 @@ def hook_subagent_start():
     content = _read_prompt("protocol.md", hook_dir)
     if content:
         _emit_hook("SubagentStart", content, hook_dir)
+
+
+@supercharge.command("hook-pre-tool-use", hidden=True)
+def hook_pre_tool_use():
+    """PreToolUse hook: auto-approve SuperchargeAI tool calls."""
+    input_data = json.load(sys.stdin)
+
+    tool_name = input_data.get("tool_name", "")
+    tool_input = input_data.get("tool_input", {})
+
+    result = _evaluate_pre_tool_use(tool_name, tool_input)
+    if result is not None:
+        json.dump(result, sys.stdout)
+
+
+# ── permissions ─────────────────────────────────────────────────────────────
+
+
+def _user_settings_path() -> Path:
+    """Return path to ~/.claude/settings.json."""
+    return Path.home() / ".claude" / "settings.json"
+
+
+def _add_user_permissions(settings_path: Path) -> list[str]:
+    """Add SuperchargeAI permissions to settings.json. Returns list of newly added entries."""
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text())
+    else:
+        settings = {}
+
+    perms = settings.setdefault("permissions", {})
+    allow = perms.setdefault("allow", [])
+
+    added = []
+    for entry in _SUPERCHARGE_PERMISSIONS:
+        if entry not in allow:
+            allow.append(entry)
+            added.append(entry)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    return added
+
+
+def _remove_user_permissions(settings_path: Path) -> int:
+    """Remove SuperchargeAI permissions from settings.json. Returns count removed."""
+    if not settings_path.exists():
+        return 0
+
+    settings = json.loads(settings_path.read_text())
+    perms = settings.get("permissions", {})
+    allow = perms.get("allow", [])
+
+    original_len = len(allow)
+    allow = [entry for entry in allow if entry not in _SUPERCHARGE_PERMISSIONS]
+    removed = original_len - len(allow)
+
+    if removed > 0:
+        perms["allow"] = allow
+        settings["permissions"] = perms
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+
+    return removed
