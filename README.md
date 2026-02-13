@@ -218,13 +218,55 @@ callback then scopes *where* they can write.
 The `can_use_tool` callback also blocks `supercharge task init` in Bash
 for all workers — only the orchestrator creates task workspaces.
 
+## Permissions
+
+SuperchargeAI needs three tool calls auto-approved to function without constant permission dialogs:
+
+- `Bash(supercharge *)` — CLI commands for task/subtask management
+- `Write(.claude/SuperchargeAI/**)` — writing task.md, result.md, notes.md
+- `Edit(.claude/SuperchargeAI/**)` — editing task files (e.g., answering agent questions)
+
+Two independent mechanisms handle this:
+
+### Tier 1: PreToolUse Hook (automatic)
+
+The plugin's `hooks.json` includes a `PreToolUse` hook that auto-approves SuperchargeAI's own tool calls at runtime. No configuration needed — it activates when the plugin is enabled.
+
+| Tool | Condition | Decision |
+|------|-----------|----------|
+| Bash | Command starts with `supercharge ` | Allow |
+| Write/Edit | Path contains `/.claude/SuperchargeAI/` | Allow |
+| Task | `subagent_type` starts with `supercharge-ai:` and prompt contains workspace path | Allow |
+| Task | `subagent_type` starts with `supercharge-ai:` but no workspace path | **Deny** |
+| Anything else | — | Pass-through (normal permission flow) |
+
+The Task deny rule enforces that agents always receive a task workspace — preventing accidental invocations without context.
+
+**Known limitation:** Plugin hooks don't fire in VS Code (Claude Code bug [#18547](https://github.com/anthropics/claude-code/issues/18547)). Use Tier 2 as a workaround.
+
+### Tier 2: Settings Permissions (manual, works everywhere)
+
+For VS Code or as a fallback, add static permission entries to `~/.claude/settings.json`:
+
+```bash
+supercharge init --add-permissions
+```
+
+This idempotently adds the three permission entries to your user-level settings. To remove them:
+
+```bash
+supercharge permissions remove
+```
+
+Tier 2 cannot enforce the Task workspace validation that Tier 1 provides — static settings don't support conditional logic.
+
 ## Developer Docs
 
 See [docs/stack-propagation.md](docs/stack-propagation.md) for details on how env vars, context, and identifiers flow through the orchestrator → agent → worker → sub-worker stack.
 
 ## TODO
 
-- [x] ~~`CLAUDE_PROJECT_DIR` not available in Bash environment~~ — Resolved: `_project_dir()` falls back to `git rev-parse --show-toplevel` → cwd. `_build_options()` resolves and propagates `CLAUDE_PROJECT_DIR` to all child workers.
-- [x] ~~Env var propagation for task UUID~~ — Resolved: `SUPERCHARGE_TASK_UUID` propagated via env dict; agents pass `--task-uuid` flag, workers inherit from env automatically.
 - [ ] End-to-end integration test
-- [ ] CLI test suite
+- [ ] Path usage metrics and dashboard
+- [ ] OpenCode support
+- [ ] Codex support
