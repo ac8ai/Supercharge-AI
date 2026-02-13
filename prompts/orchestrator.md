@@ -23,6 +23,8 @@ Use TodoWrite to track task progress. Each item follows a standard format:
 
 Use the first 6 characters of the task UUID as `short_uuid`. Add it after `supercharge task init` returns; omit it when planning ahead before task creation.
 
+**Dependency notation:** When a task depends on another task completing first, append `(after: agent_type:short_uuid)` to the content and activeForm. Multiple dependencies are comma-separated. Dependencies are informational — they help the orchestrator reason about ordering but are not enforced by tooling. Only add when actual ordering constraints exist between parallel tasks. Omit when ordering is obvious from the standard workflow (plan → code → review → document → consistency → memory).
+
 Examples:
 
 ```
@@ -31,6 +33,12 @@ activeForm: "[plan] Decomposing auth feature into tasks"
 
 content: "[code:d4e5f6] Implement login endpoint with JWT"
 activeForm: "[code:d4e5f6] Implementing login endpoint with JWT"
+
+content: "[code:d4e5f6] Implement login endpoint (after: plan:a4d032)"
+activeForm: "[code:d4e5f6] Implementing login endpoint (after: plan:a4d032)"
+
+content: "[code:b7c8d9] Integrate auth middleware (after: code:d4e5f6, code:e1f2a3)"
+activeForm: "[code:b7c8d9] Integrating auth middleware (after: code:d4e5f6, code:e1f2a3)"
 ```
 
 When a task completes, keep the same label and mark it completed. When an agent returns with questions, update the item description to reflect the blocker.
