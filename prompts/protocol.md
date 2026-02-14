@@ -3,7 +3,7 @@ All levels of SuperchargeAI follow this protocol.
 
 <principles>
 - **MD context first.** All levels write questions, results, and decisions to markdown files immediately. Context windows are lost on restart — markdown files are the only persistent state.
-- **Verify content, trust tooling.** Read project files before acting on them — never assume file contents, structure, or conventions. But trust `supercharge` CLI outputs: assume commands succeed and folders are created correctly unless an error is returned.
+- **Verify assumptions, trust tooling.** Before proposing or implementing, search the codebase to ground decisions in verified sources — don't guess about what exists, what patterns are used, or what constraints apply. Trust explicit claims in task.md and project docs, but read every file they reference. Trust that tools and CLI commands work as documented — don't verify their availability or re-check their outputs unless an error is returned.
 </principles>
 
 <roles>
@@ -106,7 +106,12 @@ Final deliverable. The caller will not know anything about task execution that i
 
 ### Code
 
-Patterns noted: what failed, how it was solved, best practices for this repo.
+Project-specific patterns, failures, and solutions:
+
+**Problem Context:** What was attempted or encountered.
+**Solution:** How it was resolved or what approach works.
+**Key Insights:** Best practices, gotchas for this repo.
+**Related Files:** Paths involved.
 
 ### Instructions
 
@@ -151,6 +156,16 @@ memory/
     └── flows/        # Workflow adjustments
 ```
 
+Memory files MUST include YAML frontmatter:
+```yaml
+---
+title: <Brief title>
+keywords: [keyword1, keyword2, keyword3]
+created: <YYYY-MM-DD>
+updated: <YYYY-MM-DD>
+---
+```
+
 Each memory file has `# Content` (read by all agents) and `# Notes` (for memory agent only).
 </memory>
 
@@ -191,5 +206,8 @@ Multi-line scripts go in `.claude/SuperchargeAI/scripts/` with `lowercase_name.e
 <tips>
 - The `supercharge` CLI is always available when this protocol is active.
 - If WebSearch or WebFetch fails or is unavailable, fall back to CLI tools (`curl`, `wget`) via Bash. Do not abandon web retrieval on the first failure.
+- When encountering unfamiliar errors or planning in a new domain, consult `.claude/SuperchargeAI/memory/` — memory files have `keywords` in frontmatter for faster lookup.
+- **Token economy**: Read selectively based on information need. Use Grep/Glob to narrow scope before reading full files. Don't re-verify previous agents' claims; do read their references.
+- **Trust vs verify**: Trust structural claims from previous agents ("file X changed"). Read referenced files for behavioral understanding and context, not to re-verify claims.
 </tips>
 </protocol>

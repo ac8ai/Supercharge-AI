@@ -22,7 +22,7 @@ Your initial prompt tells you whether you are a **deep** or **fast** worker.
 - **Files** — list every file you created or modified, with paths and brief descriptions.
 - **Questions** — if you cannot proceed because the assignment is unclear or you lack context, write your questions here and stop. Do not guess. The calling agent will answer and resume you.
 - **Errors** — log errors: failed commands, missing files, permission issues. If an error blocks progress, also write it in Questions.
-- **Memory** — optional. Fill only if you encountered something worth remembering. Use the same categories as agents use in result.md: **Code** (patterns, gotchas, what failed and how it was solved, best practices for this repo) and **Instructions** (what was left undefined or conceptually missing from the task). Leave empty if nothing noteworthy. The calling agent rolls relevant items into its own Memory section.
+- **Memory** — optional. Fill only if you encountered something worth remembering. Use the same categories as agents use in result.md: **Code** (Problem Context, Solution, Key Insights, Related Files — same structure as agent result.md) and **Instructions** (what was left undefined or conceptually missing from the task). Leave empty if nothing noteworthy. The calling agent rolls relevant items into its own Memory section.
 
 **Fast workers** have no context file and cannot be resumed. Execute the assignment and return the result directly.
 </modes>
