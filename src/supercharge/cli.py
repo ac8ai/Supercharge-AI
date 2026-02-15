@@ -787,16 +787,42 @@ def _deny(reason: str) -> dict:
     }
 
 
-def _evaluate_task_call(tool_input: dict) -> dict | None:
+def _evaluate_task_call(tool_input: dict, permission_mode: str) -> dict | None:
     """Evaluate a Task tool call for SuperchargeAI workspace enforcement.
 
     Returns allow if the subagent is ours and the prompt references the workspace.
     Returns deny if the subagent is ours but the workspace path is missing.
+    Returns deny if a project-writing agent (code/document) is launched in background
+    without sufficient permissions — the orchestrator should run it in the foreground.
     Returns None (pass-through) for non-SuperchargeAI subagents.
     """
     subagent_type = tool_input.get("subagent_type", "")
     if not subagent_type.startswith("supercharge-ai:"):
         return None
+
+    agent_type = subagent_type.removeprefix("supercharge-ai:")
+    run_in_background = tool_input.get("run_in_background", False)
+
+    # Reject background agents that write project files when permissions
+    # require user approval.  These agents would silently fail on every
+    # Write/Edit outside .claude/SuperchargeAI/ because the user cannot
+    # approve prompts for background tasks.  Direct the orchestrator to
+    # run the agent in the foreground instead.
+    #
+    # bypassPermissions = --dangerously-skip-permissions flag
+    # dontAsk           = auto-approve mode (no user prompts)
+    _PROJECT_WRITERS = {"code", "document"}
+    _AUTONOMOUS_MODES = {"bypassPermissions", "dontAsk"}
+    if (
+        agent_type in _PROJECT_WRITERS
+        and run_in_background
+        and permission_mode not in _AUTONOMOUS_MODES
+    ):
+        return _deny(
+            f"Task: {agent_type} agent writes project files and cannot run in "
+            f"the background under permission mode '{permission_mode}'. "
+            f"Run it in the foreground so the user can approve file writes."
+        )
 
     prompt = tool_input.get("prompt", "")
     if _SUPERCHARGE_WORKSPACE_MARKER in prompt:
@@ -805,7 +831,9 @@ def _evaluate_task_call(tool_input: dict) -> dict | None:
     return _deny("Task: SuperchargeAI agent missing workspace path in prompt.")
 
 
-def _evaluate_pre_tool_use(tool_name: str, tool_input: dict) -> dict | None:
+def _evaluate_pre_tool_use(
+    tool_name: str, tool_input: dict, permission_mode: str
+) -> dict | None:
     """Evaluate a PreToolUse hook call. Returns allow/deny dict or None for pass-through.
 
     Scope: fires for orchestrator and Task-tool subagents (Claude Code sessions).
@@ -838,7 +866,7 @@ def _evaluate_pre_tool_use(tool_name: str, tool_input: dict) -> dict | None:
         return None
 
     if tool_name == "Task":
-        return _evaluate_task_call(tool_input)
+        return _evaluate_task_call(tool_input, permission_mode)
 
     return None
 
@@ -926,8 +954,9 @@ def hook_pre_tool_use():
 
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
+    permission_mode = input_data.get("permission_mode", "default")
 
-    result = _evaluate_pre_tool_use(tool_name, tool_input)
+    result = _evaluate_pre_tool_use(tool_name, tool_input, permission_mode)
     if result is not None:
         json.dump(result, sys.stdout)
 

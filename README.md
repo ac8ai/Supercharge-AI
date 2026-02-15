@@ -267,6 +267,6 @@ See [docs/stack-propagation.md](docs/stack-propagation.md) for details on how en
 ## TODO
 
 - [ ] End-to-end integration test
-- [ ] Path usage metrics and dashboard
+- [ ] Path usage metrics, permission denial logging, and dashboard
 - [ ] OpenCode support
 - [ ] Codex support
