@@ -18,6 +18,9 @@
 !hooks/
 !hooks/**
 
+!scripts/
+!scripts/**
+
 !docs/
 !docs/**
 
