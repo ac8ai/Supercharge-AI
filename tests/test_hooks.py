@@ -5,11 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from supercharge.cli import (
-    _add_user_permissions,
-    _evaluate_pre_tool_use,
-    _remove_user_permissions,
-)
+from supercharge.hooks import _evaluate_pre_tool_use
+from supercharge.permissions import _add_user_permissions, _remove_user_permissions
 
 # ── _evaluate_pre_tool_use ──────────────────────────────────────────────────
 
@@ -18,7 +15,9 @@ class TestEvaluatePreToolUse:
     """Test the PreToolUse decision logic directly."""
 
     def test_bash_supercharge_command_allowed(self):
-        result = _evaluate_pre_tool_use("Bash", {"command": "supercharge task init code"}, "default")
+        result = _evaluate_pre_tool_use(
+            "Bash", {"command": "supercharge task init code"}, "default"
+        )
         assert result is not None
         assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
 
