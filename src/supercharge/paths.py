@@ -77,8 +77,8 @@ def _project_dir() -> str:
 
 
 def _task_root() -> Path:
-    """Runtime task data lives in <project>/.claude/SuperchargeAI/."""
-    return Path(_project_dir()) / ".claude" / "SuperchargeAI"
+    """Runtime task data lives in <project>/.claude/SuperchargeAI/tasks/."""
+    return Path(_project_dir()) / ".claude" / "SuperchargeAI" / "tasks"
 
 
 def _copy_template(name: str, dest: Path) -> None:

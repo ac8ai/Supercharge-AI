@@ -104,16 +104,16 @@ supercharge task init <agent_type>
 ```
 
 Then:
-1. Write task details to `.claude/SuperchargeAI/<agent_type>/<uuid>/task.md`
-2. Invoke via Task tool: "You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/<agent_type>/<uuid>/task.md`"
-3. Read `.claude/SuperchargeAI/<agent_type>/<uuid>/result.md` when agent returns
+1. Write task details to `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`
+2. Invoke via Task tool: "You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`"
+3. Read `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/result.md` when agent returns
 </new-task>
 
 <restart>
 Use when an agent ran out of context, hit a limit, or needs to continue after you answered its questions. The agent starts fresh but picks up context from its own `notes.md`.
 
 Invoke via Task tool with the same UUID:
-"You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/<agent_type>/<uuid>/task.md`"
+"You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`"
 </restart>
 
 <resume>

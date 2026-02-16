@@ -152,11 +152,10 @@ def _scan_stale_task_folders(
     """Find task folders whose newest file is older than max_age_days.
 
     Scans task_root for agent-type directories, then UUID subdirectories.
-    Excludes: memory/ dir (shared memory storage), scripts/ dir,
-    and non-UUID directory names.
+    Excludes non-UUID directory names.
 
     Args:
-        task_root: Path to .claude/SuperchargeAI/ directory.
+        task_root: Path to .claude/SuperchargeAI/tasks/ directory.
         max_age_days: Maximum age in days before a folder is considered stale.
             Defaults to env SUPERCHARGE_MEMORY_STALE_DAYS or 2 days.
 
@@ -172,13 +171,8 @@ def _scan_stale_task_folders(
     cutoff = time.time() - (max_age_days * 86400)
     results: list[Path] = []
 
-    # Directories to skip at agent-type level
-    _SKIP_DIRS = {"scripts"}
-
     for agent_dir in task_root.iterdir():
         if not agent_dir.is_dir():
-            continue
-        if agent_dir.name in _SKIP_DIRS:
             continue
 
         for task_dir in agent_dir.iterdir():
@@ -254,7 +248,7 @@ def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | No
             return None
 
         # Write task.md to the workspace
-        task_dir = Path(project_dir) / ".claude" / "SuperchargeAI" / "memory" / task_uuid
+        task_dir = Path(project_dir) / ".claude" / "SuperchargeAI" / "tasks" / "memory" / task_uuid
         task_md = task_dir / "task.md"
         task_md.write_text(task_md_content)
 

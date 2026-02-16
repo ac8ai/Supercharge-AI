@@ -230,7 +230,7 @@ class TestScanStaleTaskFolders:
         assert result == []
 
     def test_includes_memory_task_folders(self, tmp_path: Path):
-        """Memory agent UUID task folders should be cleaned up (self-cleaning loop)."""
+        """Memory agent UUID task folders are scanned (self-cleaning loop)."""
         memory_task = tmp_path / "memory" / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         memory_task.mkdir(parents=True)
         (memory_task / "task.md").write_text("# Task")
@@ -238,29 +238,6 @@ class TestScanStaleTaskFolders:
 
         result = _scan_stale_task_folders(tmp_path, max_age_days=0)
         assert result == [memory_task]
-
-    def test_excludes_memory_shared_dirs(self, tmp_path: Path):
-        """Non-UUID dirs under memory/ (methodology/, project/) are excluded."""
-        memory_dir = tmp_path / "memory"
-        memory_dir.mkdir(parents=True)
-        for name in ("methodology", "project"):
-            d = memory_dir / name
-            d.mkdir()
-            f = d / "patterns.md"
-            f.write_text("# Patterns")
-            os.utime(f, (0, 0))
-
-        result = _scan_stale_task_folders(tmp_path, max_age_days=0)
-        assert result == []
-
-    def test_excludes_scripts_dir(self, tmp_path: Path):
-        scripts_task = tmp_path / "scripts" / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        scripts_task.mkdir(parents=True)
-        (scripts_task / "script.py").write_text("print('hello')")
-        os.utime(scripts_task / "script.py", (0, 0))
-
-        result = _scan_stale_task_folders(tmp_path, max_age_days=0)
-        assert result == []
 
     def test_excludes_non_uuid_dirs(self, tmp_path: Path):
         non_uuid = tmp_path / "code" / "not-a-uuid"
@@ -390,7 +367,7 @@ class TestSpawnBackgroundMemory:
 
     def test_returns_uuid_on_success(self, tmp_path: Path):
         task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        task_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / task_uuid
+        task_dir = tmp_path / ".claude" / "SuperchargeAI" / "tasks" / "memory" / task_uuid
         task_dir.mkdir(parents=True)
 
         with (
@@ -437,7 +414,7 @@ class TestSpawnBackgroundMemory:
 
     def test_writes_task_md(self, tmp_path: Path):
         task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        task_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / task_uuid
+        task_dir = tmp_path / ".claude" / "SuperchargeAI" / "tasks" / "memory" / task_uuid
         task_dir.mkdir(parents=True)
 
         with (

@@ -29,7 +29,7 @@ Responsibilities:
 **Agents** — specialized subagents invoked via the Task tool. Each agent receives its role and workflow from its agent definition file.
 
 Responsibilities:
-- Reads task from `.claude/SuperchargeAI/<agent>/<uuid>/task.md`
+- Reads task from `.claude/SuperchargeAI/tasks/<agent>/<uuid>/task.md`
 - Reads every file referenced in task.md — never assumes contents
 - Maintains working memory in `notes.md` (the agent's only persistent context)
 - Delegates low-level work to workers via `supercharge subtask init` (see `<workers>` section)
@@ -68,7 +68,7 @@ Responsibilities:
 </roles>
 
 <task-protocol>
-Every task uses a folder: `.claude/SuperchargeAI/<agent>/<uuid>/`
+Every task uses a folder: `.claude/SuperchargeAI/tasks/<agent>/<uuid>/`
 
 **Tool discipline:** Always use Write or Edit tools for task documents (task.md, notes.md, result.md, context files). Never use Bash heredocs (`cat >`, `cat << EOF`) to write these files.
 

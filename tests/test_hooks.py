@@ -28,7 +28,7 @@ class TestEvaluatePreToolUse:
     def test_write_workspace_file_allowed(self):
         result = _evaluate_pre_tool_use(
             "Write",
-            {"file_path": "/home/user/project/.claude/SuperchargeAI/code/abc/task.md"},
+            {"file_path": "/home/user/project/.claude/SuperchargeAI/tasks/code/abc/task.md"},
             "default",
         )
         assert result is not None
@@ -60,7 +60,7 @@ class TestEvaluatePreToolUse:
             "Task",
             {
                 "subagent_type": "supercharge-ai:code",
-                "prompt": "Work in /home/user/project/.claude/SuperchargeAI/code/abc/",
+                "prompt": "Work in /home/user/project/.claude/SuperchargeAI/tasks/code/abc/",
             },
             "default",
         )
@@ -102,7 +102,7 @@ class TestBackgroundAgentRejection:
     """Project-writing agents (code/document) are rejected when run in background
     without sufficient permissions (permission_mode not bypassPermissions/dontAsk)."""
 
-    _WORKSPACE_PROMPT = "Work in /project/.claude/SuperchargeAI/code/abc/"
+    _WORKSPACE_PROMPT = "Work in /project/.claude/SuperchargeAI/tasks/code/abc/"
 
     def test_code_background_default_denied(self):
         result = _evaluate_pre_tool_use(

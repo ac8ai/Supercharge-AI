@@ -191,7 +191,7 @@ def _trigger_background_memory(input_data: dict) -> None:
                     )
 
         # Feature 2: Stale task folder cleanup
-        task_root = Path(project_dir) / ".claude" / "SuperchargeAI"
+        task_root = Path(project_dir) / ".claude" / "SuperchargeAI" / "tasks"
         if task_root.is_dir():
             stale = _scan_stale_task_folders(task_root)
             if stale:

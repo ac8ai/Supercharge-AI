@@ -312,7 +312,7 @@ async def _memory_agent_run(task_uuid: str) -> None:
 
     prompt = (
         f"You are a memory agent. Your task is at "
-        f".claude/SuperchargeAI/memory/{task_uuid}/task.md\n\n"
+        f".claude/SuperchargeAI/tasks/memory/{task_uuid}/task.md\n\n"
         f"Read task.md and execute all requirements."
     )
 
