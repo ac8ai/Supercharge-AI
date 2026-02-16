@@ -153,10 +153,63 @@ def _check_version_sync() -> str | None:
     return None
 
 
+def _trigger_background_memory(input_data: dict) -> None:
+    """Scan for unreviewed transcripts and stale task folders, spawn memory agents.
+
+    Runs after hook output is emitted. Errors are caught and logged to stderr
+    to never crash the hook (which would block session start).
+    """
+    from supercharge.memory import (
+        _format_stale_folders_task,
+        _format_transcript_task,
+        _scan_stale_task_folders,
+        _scan_unreviewed_transcripts,
+        _spawn_background_memory,
+    )
+    from supercharge.paths import _project_dir
+
+    try:
+        transcript_path = input_data.get("transcript_path", "")
+        cwd = input_data.get("cwd", "")
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or cwd or _project_dir()
+
+        if not project_dir:
+            return
+
+        memory_dir = str(Path(project_dir) / ".claude" / "SuperchargeAI" / "memory")
+
+        # Feature 1: Transcript harvesting
+        if transcript_path:
+            transcripts = _scan_unreviewed_transcripts(transcript_path)
+            if transcripts:
+                task_content = _format_transcript_task(transcripts, memory_dir)
+                uuid = _spawn_background_memory(task_content, project_dir)
+                if uuid:
+                    click.echo(
+                        f"[SuperchargeAI] Background memory: transcript harvesting ({uuid})",
+                        err=True,
+                    )
+
+        # Feature 2: Stale task folder cleanup
+        task_root = Path(project_dir) / ".claude" / "SuperchargeAI"
+        if task_root.is_dir():
+            stale = _scan_stale_task_folders(task_root)
+            if stale:
+                task_content = _format_stale_folders_task(stale, memory_dir)
+                uuid = _spawn_background_memory(task_content, project_dir)
+                if uuid:
+                    click.echo(
+                        f"[SuperchargeAI] Background memory: stale folder cleanup ({uuid})",
+                        err=True,
+                    )
+    except Exception as exc:
+        click.echo(f"[SuperchargeAI] Background memory scan failed: {exc}", err=True)
+
+
 @click.command("hook-session-start", hidden=True)
 def hook_session_start():
     """SessionStart hook: inject shared protocol + orchestrator prompt."""
-    json.load(sys.stdin)  # consume stdin (required by hook protocol)
+    input_data = json.load(sys.stdin)
 
     warning = _check_version_sync()
     if warning:
@@ -168,6 +221,9 @@ def hook_session_start():
 
     if content:
         _emit_hook("SessionStart", content, hook_dir)
+
+    # Background memory harvesting (non-blocking, after hook output)
+    _trigger_background_memory(input_data)
 
 
 @click.command("hook-subagent-start", hidden=True)

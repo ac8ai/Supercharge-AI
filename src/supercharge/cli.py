@@ -26,6 +26,7 @@ from supercharge.workers import (
     _deep_worker_init,
     _deep_worker_resume,
     _fast_worker_init,
+    _memory_agent_run,
     _prepare_worker_file,
 )
 
@@ -282,3 +283,28 @@ def subtask_resume(worker_id: str, prompt: str):
 
     result = asyncio.run(_deep_worker_resume(worker_id, prompt, task_dir, agent_type))
     click.echo(json.dumps(result))
+
+
+# ── memory ──────────────────────────────────────────────────────────────────
+
+
+@supercharge.group()
+def memory():
+    """Background memory harvesting commands."""
+
+
+@memory.command("run")
+@click.argument("task_uuid")
+def memory_run(task_uuid: str):
+    """Run the memory agent on a task workspace (background process)."""
+    asyncio.run(_memory_agent_run(task_uuid))
+
+
+@memory.command("stamp")
+@click.argument("transcript_path", type=click.Path(exists=True))
+def memory_stamp(transcript_path: str):
+    """Mark a transcript as reviewed by appending a stamp entry."""
+    from supercharge.memory import _stamp_transcript
+
+    _stamp_transcript(Path(transcript_path))
+    click.echo(f"Stamped {transcript_path}")

@@ -12,6 +12,7 @@ from supercharge.paths import (
     _ENV_PROJECT_DIR,
     _cli_data_dir,
     _copy_template,
+    _find_task_dir,
     _project_dir,
     _read_prompt,
 )
@@ -273,3 +274,60 @@ async def _fast_worker_init(
         return {"worker_id": worker_id, "error": result_msg.result}
 
     return {"worker_id": worker_id, "result": result_msg.result}
+
+
+# ── Memory agent (background, one-shot) ───────────────────────────────────
+
+
+async def _memory_agent_run(task_uuid: str) -> None:
+    """Run the memory agent on a task workspace (background entry point).
+
+    Resolves the task directory, reads task.md for the prompt, builds
+    Agent SDK options with bypassPermissions, and runs one-shot via
+    query(). Logs to stderr since this runs as a detached process.
+    """
+    import sys
+
+    from claude_agent_sdk import ResultMessage, query
+
+    task_dir = _find_task_dir(task_uuid)
+    if not task_dir:
+        print(f"[SuperchargeAI] memory run: task {task_uuid} not found", file=sys.stderr)
+        return
+
+    task_md = task_dir / "task.md"
+    if not task_md.exists():
+        print(f"[SuperchargeAI] memory run: task.md missing in {task_dir}", file=sys.stderr)
+        return
+
+    options = _build_options(
+        task_dir,
+        remaining_depth=1,
+        max_turns=50,
+        model=None,
+        agent_type="memory",
+        worker_id=task_uuid,
+    )
+    options.permission_mode = "bypassPermissions"
+
+    prompt = (
+        f"You are a memory agent. Your task is at "
+        f".claude/SuperchargeAI/memory/{task_uuid}/task.md\n\n"
+        f"Read task.md and execute all requirements."
+    )
+
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, ResultMessage):
+                if message.is_error:
+                    print(
+                        f"[SuperchargeAI] memory agent error: {message.result}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"[SuperchargeAI] memory agent completed: {task_uuid}",
+                        file=sys.stderr,
+                    )
+    except Exception as exc:
+        print(f"[SuperchargeAI] memory agent failed: {exc}", file=sys.stderr)

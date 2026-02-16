@@ -62,7 +62,7 @@ _AGENT_PERMISSIONS: dict[str, dict] = {
         "write_scope": "context",
     },
     "memory": {
-        "deep_tools": ["Read", "Write", "Glob", "Grep"],
+        "deep_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         "fast_tools": ["Read", "Glob", "Grep"],
         "write_scope": "memory",
     },

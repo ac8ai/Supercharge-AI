@@ -1,7 +1,7 @@
 ---
 name: memory
 description: Harvest learnings from completed tasks into shared memory, then clean up task folders. Always the last agent on a task.
-tools: Read, Write, Edit, Glob, Grep
+tools: Read, Write, Edit, Bash, Glob, Grep
 model: inherit
 ---
 
