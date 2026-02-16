@@ -173,6 +173,40 @@ def task_init(agent_type: str):
     click.echo(task_id)
 
 
+@task.command("cleanup")
+@click.argument("task_uuid")
+def task_cleanup(task_uuid: str):
+    """Safely delete a task folder after memory harvesting.
+
+    Validates the UUID format and confirms the path is inside
+    .claude/SuperchargeAI/tasks/ before removing.
+    """
+    import re
+    import shutil
+
+    uuid_re = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    if not uuid_re.match(task_uuid):
+        raise click.ClickException(f"Invalid UUID format: {task_uuid}")
+
+    task_dir = _find_task_dir(task_uuid)
+    if not task_dir:
+        raise click.ClickException(f"Task {task_uuid} not found")
+
+    # Verify the resolved path is actually inside the task root
+    task_root = _task_root()
+    try:
+        task_dir.resolve().relative_to(task_root.resolve())
+    except ValueError:
+        raise click.ClickException(
+            f"Task directory {task_dir} is outside task root {task_root}"
+        )
+
+    shutil.rmtree(task_dir)
+    click.echo(f"Removed {task_dir}")
+
+
 # ── subtask ──────────────────────────────────────────────────────────────────
 
 

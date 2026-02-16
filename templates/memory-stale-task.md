@@ -8,7 +8,7 @@ Harvest learnings from stale task folders and clean them up. You are running in 
 2. Extract learnings from `## Memory` sections into shared memory
 3. Write learnings to `memory/methodology/` and `memory/project/` as appropriate
 4. Follow the memory file format: YAML frontmatter + `# Content` + `# Notes`
-5. After harvesting each folder, delete it with `rm -rf <folder_path>`
+5. After harvesting each folder, delete it with `supercharge task cleanup <uuid>` (extract the UUID from the folder path)
 
 ## Stale Task Folders
 

@@ -23,7 +23,7 @@ You are always the **last agent** invoked on a task. By the time you run, all ot
    - A `# Notes` heading
    - After editing an existing file, verify that the title and Content heading still accurately describe the file's content. Update them if they've become obsolete.
 6. **Prune** — remove or consolidate memory that is outdated, superseded, or no longer relevant
-7. **Delete the task folder** — after harvesting is complete, remove the entire task directory (e.g., `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/`). The learnings now live in memory; the task folder is no longer needed
+7. **Delete the task folder** — after harvesting is complete, run `supercharge task cleanup <uuid>` to safely remove the task directory. The learnings now live in memory; the task folder is no longer needed
 </workflow>
 
 <principles>
