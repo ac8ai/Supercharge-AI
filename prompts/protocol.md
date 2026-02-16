@@ -70,6 +70,8 @@ Responsibilities:
 <task-protocol>
 Every task uses a folder: `.claude/SuperchargeAI/<agent>/<uuid>/`
 
+**Tool discipline:** Always use Write or Edit tools for task documents (task.md, notes.md, result.md, context files). Never use Bash heredocs (`cat >`, `cat << EOF`) to write these files.
+
 <task-md>
 Created by the orchestrator.
 

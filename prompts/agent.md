@@ -1,4 +1,17 @@
 <agent>
+<notes-discipline>
+`notes.md` is your only persistent state. Update it **continuously as you work**, never in a batch at the end.
+
+**When to update notes.md:**
+1. **Immediately after reading task.md** — write your `# Open tasks` plan of attack
+2. **Before each worker spawn** — mark the subtask `[~]` in progress
+3. **After each worker returns** — mark `[x]`, log key findings under `# Notes`
+4. **On every significant discovery or decision** — add a `## Note` entry
+5. **Before returning** — final update with any loose ends
+
+A notes.md written in one dump at the end is useless — it captures nothing that result.md doesn't already have. Write as if your context window could be lost after every tool call.
+</notes-discipline>
+
 <task-tracking>
 Track subtasks in the `# Open tasks` section of `notes.md` using structured entries:
 
