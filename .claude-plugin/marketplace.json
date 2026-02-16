@@ -15,7 +15,7 @@
         "repo": "ac8ai/Supercharge-AI"
       },
       "description": "Multi-agent framework for Claude Code — recursive self-delegation, persistent memory, per-agent tool permissions",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "keywords": ["agents", "orchestration", "workflow", "multi-agent", "memory"],
       "category": "productivity"
     }
