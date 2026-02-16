@@ -1,6 +1,7 @@
 # Supercharge-AI
 
-Python tools and hooks for Claude Code.
+Supercharge-AI is a recursive Claude Code orchestrator that improves as it builds. It moves context to markdown, delegates it recursively to workers, allowing a more focused task execution and avoiding information loss during context compaction. Memory agent helps Supercharge to learn from its errors and improve itself over the time.
+
 
 Inspired by [Recursive Language Models (RLM)](https://arxiv.org/abs/2512.24601) and [Confucius Code Agent (CCA)](https://arxiv.org/abs/2512.10398) — recursive self-delegation from RLM, persistent note-taking and hierarchical orchestration from CCA.
 
@@ -200,7 +201,7 @@ Workers get tool access scoped by agent type. Two mechanisms:
 | `document` | Read, Write, Edit, Glob, Grep | Read, Glob, Grep |
 | `research` | Read, Write, Glob, Grep, WebSearch, WebFetch | Read, Glob, Grep, WebSearch, WebFetch |
 | `consistency` | Read, Write, Glob, Grep | Read, Glob, Grep |
-| `memory` | Read, Write, Glob, Grep | Read, Glob, Grep |
+| `memory` | Read, Write, Edit, Bash, Glob, Grep | Read, Glob, Grep |
 
 All deep workers get Write for their context file. The `can_use_tool`
 callback then scopes *where* they can write.
