@@ -206,10 +206,31 @@ def _trigger_background_memory(input_data: dict) -> None:
         click.echo(f"[SuperchargeAI] Background memory scan failed: {exc}", err=True)
 
 
+def _ensure_project_dir(input_data: dict) -> None:
+    """Pre-create the Claude Code extension's session directory.
+
+    The VS Code extension reads this directory on startup to list sessions.
+    In devcontainers, the directory may not exist yet, causing a permanent
+    ENOENT failure in the extension. Creating it here ensures subsequent
+    extension retries succeed.
+    """
+    cwd = input_data.get("cwd", "")
+    if not cwd:
+        return
+    project_slug = cwd.replace("/", "-")
+    project_dir = Path.home() / ".claude" / "projects" / project_slug
+    try:
+        project_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+
 @click.command("hook-session-start", hidden=True)
 def hook_session_start():
     """SessionStart hook: inject shared protocol + orchestrator prompt."""
     input_data = json.load(sys.stdin)
+
+    _ensure_project_dir(input_data)
 
     warning = _check_version_sync()
     if warning:
