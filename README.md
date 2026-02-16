@@ -8,12 +8,16 @@ Inspired by [Recursive Language Models (RLM)](https://arxiv.org/abs/2512.24601) 
 ## Installation
 
 ```bash
-claude plugin install supercharge-ai --plugin-dir ~/.claude/Supercharge-AI
+claude plugin marketplace add ac8ai/Supercharge-AI
+claude plugin install supercharge-ai
+supercharge init --add-permissions
 ```
 
 On first session start, the plugin auto-installs `uv` and the `supercharge` CLI if missing. Prompts are injected automatically via SessionStart and SubagentStart hooks.
 
-**Recommended:** After installing, run `supercharge init` in each project to add the SuperchargeAI `@path` include to your CLAUDE.md. This ensures Claude Code prioritizes SuperchargeAI methodology over its default patterns.
+`supercharge init` adds the SuperchargeAI `@path` include to your project's CLAUDE.md. The `--add-permissions` flag adds permission entries to `~/.claude/settings.json` so you don't get constant approval dialogs.
+
+Linux and macOS only for now.
 
 ## Architecture
 

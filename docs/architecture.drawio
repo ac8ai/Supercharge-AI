@@ -1,17 +1,17 @@
 <mxfile host="65bd71144e">
     <diagram id="supercharge-ai-arch" name="SuperchargeAI Architecture">
-        <mxGraphModel dx="473" dy="513" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1050" math="0" shadow="0">
+        <mxGraphModel dx="2210" dy="1215" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1050" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
                 <mxCell id="orch_box" value="&lt;b style=&#39;font-size:15px&#39;&gt;Orchestrator&lt;/b&gt; (depth=0)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;verticalAlign=top;fontSize=14;arcSize=6;container=1;collapsible=0;" parent="1" vertex="1">
-                    <mxGeometry x="190" y="30" width="820" height="300" as="geometry"/>
+                    <mxGeometry x="190" y="30" width="600" height="300" as="geometry"/>
                 </mxCell>
                 <mxCell id="orch_llm" value="&lt;b&gt;Claude Code&lt;/b&gt;&lt;br&gt;(Opus)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#333333;fontSize=13;" parent="orch_box" vertex="1">
-                    <mxGeometry x="310" y="50" width="200" height="65" as="geometry"/>
+                    <mxGeometry x="226.8292682926829" y="50" width="146.34146341463415" height="65" as="geometry"/>
                 </mxCell>
                 <mxCell id="orch_env" value="&lt;div style=&#39;background:#2D2D2D;color:#7FE8C4;padding:5px 8px;border-radius:4px;font-family:monospace;font-size:11px;text-align:left;margin-bottom:6px&#39;&gt;supercharge task init &amp;lt;agent&amp;gt;&lt;br&gt;TodoWrite &amp;middot; task.md &amp;middot; result.md&lt;/div&gt;&lt;b&gt;Environment&lt;/b&gt;&lt;br&gt;(Tools + File System)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=12;verticalAlign=bottom;" parent="orch_box" vertex="1">
-                    <mxGeometry x="245" y="160" width="330" height="115" as="geometry"/>
+                    <mxGeometry x="179.2682926829268" y="160" width="241.46341463414635" height="115" as="geometry"/>
                 </mxCell>
                 <mxCell id="orch_llm_env" style="endArrow=block;endFill=1;startArrow=block;startFill=1;strokeWidth=1.5;" parent="orch_box" source="orch_llm" target="orch_env" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
@@ -23,7 +23,7 @@
                     <mxGeometry x="40" y="195" width="110" height="45" as="geometry"/>
                 </mxCell>
                 <mxCell id="response_out" value="user&lt;br&gt;response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;" parent="1" vertex="1">
-                    <mxGeometry x="1050" y="150" width="110" height="45" as="geometry"/>
+                    <mxGeometry x="870" y="157.5" width="110" height="45" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_user_orch" style="endArrow=block;endFill=1;strokeWidth=1.5;" parent="1" source="user_req" target="orch_llm" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
@@ -95,7 +95,7 @@
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="w_label" value="&lt;b style=&#39;font-size:14px&#39;&gt;Workers&lt;/b&gt; (depth=2+)" style="text;html=1;align=center;fontSize=14;" parent="1" vertex="1">
-                    <mxGeometry x="600" y="800" width="250" height="25" as="geometry"/>
+                    <mxGeometry x="607" y="800" width="250" height="25" as="geometry"/>
                 </mxCell>
                 <mxCell id="w_deep" value="&lt;b&gt;Deep Worker&lt;/b&gt;&lt;br&gt;(opus / sonnet)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=12;" parent="1" vertex="1">
                     <mxGeometry x="560" y="830" width="160" height="55" as="geometry"/>
@@ -128,7 +128,52 @@
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="workflow" value="&lt;b&gt;Standard Flow:&lt;/b&gt;  plan &amp;rarr; code &amp;rarr; review &amp;rarr; document &amp;rarr; consistency &amp;rarr; memory" style="text;html=1;fontSize=12;align=center;fontColor=#666666;" parent="1" vertex="1">
-                    <mxGeometry x="300" y="970" width="600" height="25" as="geometry"/>
+                    <mxGeometry x="170" y="960" width="600" height="25" as="geometry"/>
+                </mxCell>
+                <mxCell id="mem_store" value="&lt;b&gt;memory/&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=12;verticalAlign=top;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="825" width="200" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="mem_project" value="&lt;b&gt;project/&lt;/b&gt;&lt;br&gt;&lt;span style=&#39;font-size:9px;color:#666&#39;&gt;patterns &amp;amp; gotchas&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=10;" parent="mem_store" vertex="1">
+                    <mxGeometry x="105" y="30" width="85" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="mem_method" value="&lt;b&gt;methodology/&lt;/b&gt;&lt;br&gt;&lt;span style=&#39;font-size:9px;color:#666&#39;&gt;evolves workflow&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=10;" parent="mem_store" vertex="1">
+                    <mxGeometry x="10" y="30" width="85" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_a1result_mem" value="harvest" style="endArrow=block;endFill=1;dashed=1;strokeColor=#9673A6;fontColor=#9673A6;fontSize=10;" parent="1" source="a1_result" target="mem_store" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_mem_a1" value="lookup" style="endArrow=block;endFill=1;dashed=1;strokeColor=#9673A6;fontColor=#9673A6;fontSize=10;entryX=0.565;entryY=1.008;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="mem_project" target="agent1_box" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_mem_a2" value="lookup" style="endArrow=block;endFill=1;dashed=1;strokeColor=#9673A6;fontColor=#9673A6;fontSize=10;entryX=0;entryY=1;entryDx=0;entryDy=0;" parent="1" source="mem_project" target="agent2_box" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_method_orch" value="evolves workflow" style="endArrow=block;endFill=1;dashed=1;dashPattern=4 2;strokeColor=#9673A6;fontColor=#9673A6;fontSize=10;entryX=0.5;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="mem_method" target="ripple_inner" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="2" value="harvest" style="endArrow=block;endFill=1;dashed=1;strokeColor=#9673A6;fontColor=#9673A6;fontSize=10;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="w_deep" target="mem_store" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="238" y="650" as="sourcePoint"/>
+                        <mxPoint x="143" y="840" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="3" value="harvest" style="endArrow=block;endFill=1;dashed=1;strokeColor=#9673A6;fontColor=#9673A6;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="dots1" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="248" y="660" as="sourcePoint"/>
+                        <mxPoint x="220" y="920" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="4" value="" style="group" parent="1" vertex="1" connectable="0">
+                    <mxGeometry x="59" y="698" width="76" height="76" as="geometry"/>
+                </mxCell>
+                <mxCell id="ripple_outer" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9673A6;strokeWidth=0.5;opacity=25;" parent="4" vertex="1">
+                    <mxGeometry width="76" height="76" as="geometry"/>
+                </mxCell>
+                <mxCell id="ripple_mid" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9673A6;strokeWidth=1;opacity=50;" parent="4" vertex="1">
+                    <mxGeometry x="18" y="18" width="40" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="ripple_inner" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9673A6;strokeWidth=1.5;opacity=80;" parent="4" vertex="1">
+                    <mxGeometry x="30" y="30" width="16" height="16" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
