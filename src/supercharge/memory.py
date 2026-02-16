@@ -34,9 +34,18 @@ def _load_template(name: str) -> str:
     return path.read_text()
 
 
-def _format_transcript_task(transcripts: list[Path], memory_dir: str) -> str:
+def _format_transcript_task(transcripts: list[tuple[Path, int | None]], memory_dir: str) -> str:
     """Format the transcript harvesting task.md from template."""
-    transcript_list = "\n".join(f"- `{p}`" for p in transcripts)
+    lines = []
+    for path, start_line in transcripts:
+        if start_line is not None:
+            lines.append(
+                f"- `{path}` (start reading from line {start_line}"
+                " -- skip previously reviewed content)"
+            )
+        else:
+            lines.append(f"- `{path}`")
+    transcript_list = "\n".join(lines)
     template = _load_template("memory-transcript-task.md")
     return template.format(transcript_list=transcript_list, memory_dir=memory_dir)
 
@@ -54,8 +63,8 @@ def _format_stale_folders_task(folders: list[Path], memory_dir: str) -> str:
 def _scan_unreviewed_transcripts(
     transcript_path: str,
     min_age_hours: float | None = None,
-) -> list[Path]:
-    """Find unreviewed, old-enough transcript files in the same directory.
+) -> list[tuple[Path, int | None]]:
+    """Find unreviewed or partially-reviewed transcript files.
 
     Args:
         transcript_path: Path to the current session's transcript file.
@@ -65,7 +74,8 @@ def _scan_unreviewed_transcripts(
             or 1 hour.
 
     Returns:
-        List of Path objects for transcripts that are unreviewed and old enough.
+        List of (path, start_line) tuples. start_line is the 1-based line
+        to begin reading from (None = read entire file, i.e. no prior stamp).
     """
     if min_age_hours is None:
         min_age_hours = float(os.environ.get(_ENV_SESSION_AGE_HOURS, "1"))
@@ -78,7 +88,7 @@ def _scan_unreviewed_transcripts(
 
     current_name = transcript.name
     cutoff = time.time() - (min_age_hours * 3600)
-    results: list[Path] = []
+    results: list[tuple[Path, int | None]] = []
 
     for f in parent.iterdir():
         if not f.is_file() or f.suffix != ".jsonl":
@@ -92,41 +102,63 @@ def _scan_unreviewed_transcripts(
                 continue
         except OSError:
             continue
-        # Skip already-stamped files
-        if _is_stamped(f):
+        # Check stamp status
+        is_fully_reviewed, last_stamp_line = _stamp_status(f)
+        if is_fully_reviewed:
             continue
-        results.append(f)
+        if last_stamp_line is not None:
+            results.append((f, last_stamp_line + 1))
+        else:
+            results.append((f, None))
 
     return results
 
 
-def _is_stamped(path: Path) -> bool:
-    """Check if a transcript file has been stamped as reviewed.
+def _stamp_status(path: Path) -> tuple[bool, int | None]:
+    """Check stamp status of a transcript file.
 
-    Reads the last few KB of the file to check for the stamp entry,
-    which is always appended at the end.
+    Reads the full file to determine if a reviewed stamp exists and
+    whether new content has been appended after the last stamp.
+
+    Returns:
+        (is_fully_reviewed, last_stamp_line) where last_stamp_line is 1-based.
+        - (True, N): stamp at line N is the last meaningful entry -> skip
+        - (False, N): stamp at line N but new content after it -> re-process from N+1
+        - (False, None): no stamp at all -> process entire file
     """
     try:
-        size = path.stat().st_size
-        # Read last 4KB — stamp lines are short, this is generous
-        read_size = min(size, 4096)
-        with path.open("rb") as fh:
-            if read_size < size:
-                fh.seek(-read_size, 2)
-            tail = fh.read().decode("utf-8", errors="replace")
-        for line in tail.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                if isinstance(entry, dict) and entry.get("type") == _STAMP_TYPE:
-                    return True
-            except (json.JSONDecodeError, ValueError):
-                continue
-        return False
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return (False, None)
+
+    lines = text.splitlines()
+    if not lines:
+        return (False, None)
+
+    last_stamp_line: int | None = None
+    has_content_after_stamp = False
+
+    for i, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+            if isinstance(entry, dict) and entry.get("type") == _STAMP_TYPE:
+                last_stamp_line = i
+                has_content_after_stamp = False
+                continue
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # Non-stamp, non-blank line
+        if last_stamp_line is not None:
+            has_content_after_stamp = True
+
+    if last_stamp_line is None:
+        return (False, None)
+    if has_content_after_stamp:
+        return (False, last_stamp_line)
+    return (True, last_stamp_line)
 
 
 def _stamp_transcript(transcript_path: Path) -> None:

@@ -4,7 +4,7 @@ Harvest learnings from completed session transcripts. You are running in the bac
 
 ## Requirements
 
-1. Read each transcript file listed below
+1. Read each transcript file listed below. Some files include a line offset. For those, ONLY process content from that line onward -- earlier content was already reviewed in a previous pass
 2. Extract patterns worth remembering:
    - Corrections the user made to agent behavior
    - Negative feedback patterns (what the user rejected or asked to redo)

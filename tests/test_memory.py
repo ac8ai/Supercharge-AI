@@ -10,11 +10,12 @@ from unittest.mock import patch
 
 from supercharge.memory import (
     _STAMP_TYPE,
-    _is_stamped,
+    _format_transcript_task,
     _newest_mtime,
     _scan_stale_task_folders,
     _scan_unreviewed_transcripts,
     _spawn_background_memory,
+    _stamp_status,
     _stamp_transcript,
 )
 
@@ -39,19 +40,51 @@ class TestScanUnreviewedTranscripts:
         result = _scan_unreviewed_transcripts(str(current), min_age_hours=0)
         assert result == []
 
-    def test_skips_stamped_transcript(self, tmp_path: Path):
+    def test_skips_fully_reviewed_transcript(self, tmp_path: Path):
         current = tmp_path / "current.jsonl"
         current.touch()
 
         stamped = tmp_path / "old_session.jsonl"
         stamp = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
-        stamped.write_text(
-            '{"type": "user", "text": "hello"}\n' + json.dumps(stamp) + "\n"
-        )
+        stamped.write_text('{"type": "user", "text": "hello"}\n' + json.dumps(stamp) + "\n")
         os.utime(stamped, (0, 0))
 
         result = _scan_unreviewed_transcripts(str(current), min_age_hours=0)
         assert result == []
+
+    def test_includes_stamped_transcript_with_new_content(self, tmp_path: Path):
+        current = tmp_path / "current.jsonl"
+        current.touch()
+
+        partially = tmp_path / "old_session.jsonl"
+        stamp = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
+        partially.write_text(
+            '{"type": "user", "text": "hello"}\n'
+            + json.dumps(stamp)
+            + "\n"
+            + '{"type": "user", "text": "new content"}\n'
+        )
+        os.utime(partially, (0, 0))
+
+        result = _scan_unreviewed_transcripts(str(current), min_age_hours=0)
+        assert len(result) == 1
+        path, offset = result[0]
+        assert path == partially
+        assert offset == 3  # stamp is on line 2, so start reading from line 3
+
+    def test_returns_none_offset_for_unstamped(self, tmp_path: Path):
+        current = tmp_path / "current.jsonl"
+        current.touch()
+
+        unstamped = tmp_path / "old_session.jsonl"
+        unstamped.write_text('{"type": "user", "text": "hello"}\n')
+        os.utime(unstamped, (0, 0))
+
+        result = _scan_unreviewed_transcripts(str(current), min_age_hours=0)
+        assert len(result) == 1
+        path, offset = result[0]
+        assert path == unstamped
+        assert offset is None
 
     def test_skips_too_recent_transcript(self, tmp_path: Path):
         current = tmp_path / "current.jsonl"
@@ -75,7 +108,9 @@ class TestScanUnreviewedTranscripts:
 
         result = _scan_unreviewed_transcripts(str(current), min_age_hours=0)
         assert len(result) == 1
-        assert result[0] == eligible
+        path, offset = result[0]
+        assert path == eligible
+        assert offset is None
 
     def test_returns_multiple_eligible(self, tmp_path: Path):
         current = tmp_path / "current.jsonl"
@@ -88,6 +123,9 @@ class TestScanUnreviewedTranscripts:
 
         result = _scan_unreviewed_transcripts(str(current), min_age_hours=0)
         assert len(result) == 3
+        # All should be (path, None) since none are stamped
+        for path, offset in result:
+            assert offset is None
 
     def test_missing_parent_dir_returns_empty(self, tmp_path: Path):
         nonexistent = tmp_path / "nodir" / "session.jsonl"
@@ -125,33 +163,146 @@ class TestScanUnreviewedTranscripts:
             assert len(result) == 0
 
 
-# ── _is_stamped ───────────────────────────────────────────────────────────
+# ── _stamp_status ─────────────────────────────────────────────────────────
 
 
-class TestIsStamped:
-    """Test stamp detection in transcript files."""
+class TestStampStatus:
+    """Test stamp status detection in transcript files."""
 
-    def test_stamped_file(self, tmp_path: Path):
+    def test_no_stamp(self, tmp_path: Path):
+        f = tmp_path / "session.jsonl"
+        f.write_text(
+            '{"type": "user", "text": "hello"}\n'
+            '{"type": "assistant", "text": "hi"}\n'
+            '{"type": "user", "text": "bye"}\n'
+        )
+        assert _stamp_status(f) == (False, None)
+
+    def test_stamp_as_last_entry(self, tmp_path: Path):
         f = tmp_path / "session.jsonl"
         stamp = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
         f.write_text(
-            '{"type": "user", "text": "hello"}\n' + json.dumps(stamp) + "\n"
+            '{"type": "user", "text": "hello"}\n'
+            '{"type": "assistant", "text": "hi"}\n'
+            '{"type": "user", "text": "bye"}\n' + json.dumps(stamp) + "\n"
         )
-        assert _is_stamped(f) is True
+        assert _stamp_status(f) == (True, 4)
 
-    def test_unstamped_file(self, tmp_path: Path):
+    def test_stamp_followed_by_new_content(self, tmp_path: Path):
         f = tmp_path / "session.jsonl"
-        f.write_text('{"type": "user", "text": "hello"}\n')
-        assert _is_stamped(f) is False
+        stamp = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
+        f.write_text(
+            '{"type": "user", "text": "hello"}\n'
+            '{"type": "assistant", "text": "hi"}\n'
+            '{"type": "user", "text": "bye"}\n'
+            + json.dumps(stamp)
+            + "\n"
+            + '{"type": "user", "text": "new message"}\n'
+            + '{"type": "assistant", "text": "new reply"}\n'
+        )
+        assert _stamp_status(f) == (False, 4)
+
+    def test_multiple_stamps_last_is_final(self, tmp_path: Path):
+        f = tmp_path / "session.jsonl"
+        stamp1 = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
+        stamp2 = {"type": _STAMP_TYPE, "timestamp": "2025-01-02T00:00:00Z", "version": "0.1.0"}
+        f.write_text(
+            '{"type": "user", "text": "hello"}\n'
+            + json.dumps(stamp1)
+            + "\n"
+            + '{"type": "user", "text": "more"}\n'
+            + json.dumps(stamp2)
+            + "\n"
+        )
+        assert _stamp_status(f) == (True, 4)
+
+    def test_multiple_stamps_with_content_after_last(self, tmp_path: Path):
+        f = tmp_path / "session.jsonl"
+        stamp1 = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
+        stamp2 = {"type": _STAMP_TYPE, "timestamp": "2025-01-02T00:00:00Z", "version": "0.1.0"}
+        f.write_text(
+            '{"type": "user", "text": "hello"}\n'
+            + json.dumps(stamp1)
+            + "\n"
+            + '{"type": "user", "text": "more"}\n'
+            + json.dumps(stamp2)
+            + "\n"
+            + '{"type": "user", "text": "even more"}\n'
+        )
+        assert _stamp_status(f) == (False, 4)
 
     def test_empty_file(self, tmp_path: Path):
         f = tmp_path / "session.jsonl"
         f.touch()
-        assert _is_stamped(f) is False
+        assert _stamp_status(f) == (False, None)
 
     def test_nonexistent_file(self, tmp_path: Path):
         f = tmp_path / "nonexistent.jsonl"
-        assert _is_stamped(f) is False
+        assert _stamp_status(f) == (False, None)
+
+    def test_stamp_followed_by_blank_lines(self, tmp_path: Path):
+        f = tmp_path / "session.jsonl"
+        stamp = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
+        f.write_text(
+            '{"type": "user", "text": "hello"}\n' + json.dumps(stamp) + "\n" + "\n" + "\n" + "\n"
+        )
+        assert _stamp_status(f) == (True, 2)
+
+    def test_stamp_as_only_content(self, tmp_path: Path):
+        f = tmp_path / "session.jsonl"
+        stamp = {"type": _STAMP_TYPE, "timestamp": "2025-01-01T00:00:00Z", "version": "0.1.0"}
+        f.write_text(json.dumps(stamp) + "\n")
+        assert _stamp_status(f) == (True, 1)
+
+
+# ── _format_transcript_task ───────────────────────────────────────────────
+
+
+class TestFormatTranscriptTask:
+    """Test transcript task formatting with offsets."""
+
+    def test_format_with_no_offsets(self):
+        transcripts = [
+            (Path("/tmp/a.jsonl"), None),
+            (Path("/tmp/b.jsonl"), None),
+        ]
+        with patch("supercharge.memory._load_template") as mock_tpl:
+            mock_tpl.return_value = "Files:\n{transcript_list}\n\nMemory: {memory_dir}"
+            result = _format_transcript_task(transcripts, "/mem")
+        assert "- `/tmp/a.jsonl`" in result
+        assert "- `/tmp/b.jsonl`" in result
+        assert "start reading from line" not in result
+
+    def test_format_with_offsets(self):
+        transcripts = [
+            (Path("/tmp/a.jsonl"), 42),
+            (Path("/tmp/b.jsonl"), 10),
+        ]
+        with patch("supercharge.memory._load_template") as mock_tpl:
+            mock_tpl.return_value = "Files:\n{transcript_list}\n\nMemory: {memory_dir}"
+            result = _format_transcript_task(transcripts, "/mem")
+        assert (
+            "- `/tmp/a.jsonl` (start reading from line 42"
+            " -- skip previously reviewed content)" in result
+        )
+        assert (
+            "- `/tmp/b.jsonl` (start reading from line 10"
+            " -- skip previously reviewed content)" in result
+        )
+
+    def test_format_mixed(self):
+        transcripts = [
+            (Path("/tmp/a.jsonl"), None),
+            (Path("/tmp/b.jsonl"), 5),
+        ]
+        with patch("supercharge.memory._load_template") as mock_tpl:
+            mock_tpl.return_value = "Files:\n{transcript_list}\n\nMemory: {memory_dir}"
+            result = _format_transcript_task(transcripts, "/mem")
+        assert "- `/tmp/a.jsonl`\n" in result
+        assert (
+            "- `/tmp/b.jsonl` (start reading from line 5"
+            " -- skip previously reviewed content)" in result
+        )
 
 
 # ── _stamp_transcript ─────────────────────────────────────────────────────
@@ -205,13 +356,19 @@ class TestStampTranscript:
         for i, line in enumerate(lines):
             assert result_lines[i] == line
 
-    def test_stamped_file_detected_by_is_stamped(self, tmp_path: Path):
+    def test_stamped_file_detected_by_stamp_status(self, tmp_path: Path):
         f = tmp_path / "session.jsonl"
         f.write_text('{"type": "user"}\n')
 
-        assert _is_stamped(f) is False
+        is_reviewed, line = _stamp_status(f)
+        assert is_reviewed is False
+        assert line is None
+
         _stamp_transcript(f)
-        assert _is_stamped(f) is True
+
+        is_reviewed, line = _stamp_status(f)
+        assert is_reviewed is True
+        assert line == 2
 
 
 # ── _scan_stale_task_folders ──────────────────────────────────────────────
