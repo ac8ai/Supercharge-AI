@@ -20,6 +20,8 @@ _SUPERCHARGE_PERMISSIONS = [
     "Bash(supercharge *)",
     "Write(.claude/SuperchargeAI/**)",
     "Edit(.claude/SuperchargeAI/**)",
+    "WebSearch",
+    "WebFetch",
 ]
 
 # ── Per-agent tool permissions ──────────────────────────────────────────────
