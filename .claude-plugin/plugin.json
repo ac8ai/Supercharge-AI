@@ -1,7 +1,7 @@
 {
   "name": "supercharge-ai",
   "description": "Multi-agent framework for Claude Code",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": {
     "name": "Tom Bukic",
     "email": "tom@ac8.ai"

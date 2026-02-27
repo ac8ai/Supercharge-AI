@@ -309,6 +309,10 @@ async def _memory_agent_run(task_uuid: str) -> None:
         worker_id=task_uuid,
     )
     options.permission_mode = "bypassPermissions"
+    # can_use_tool is incompatible with string prompts in the Agent SDK (requires
+    # AsyncIterable/streaming mode). Since we use bypassPermissions, write-scope
+    # enforcement via can_use_tool is unnecessary — clear it to avoid the crash.
+    options.can_use_tool = None
 
     prompt = (
         f"You are a memory agent. Your task is at "
