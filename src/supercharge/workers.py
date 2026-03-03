@@ -145,6 +145,7 @@ def _build_options(
             _ENV_REMAINING: str(remaining_depth - 1),
             _ENV_TASK_UUID: task_dir.name,
             _ENV_PROJECT_DIR: project_root,
+            "CLAUDECODE": "",  # Allow nested Claude Code spawn via Agent SDK
         },
     )
 
