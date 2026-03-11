@@ -30,7 +30,7 @@ _SUPERCHARGE_PERMISSIONS = [
 # write_scope: where deep workers may Write/Edit
 #   "project" = anywhere in project root
 #   "memory"  = memory dir + context file
-#   "context" = context file only
+#   "context" = anywhere in task directory (result.md, notes.md, workers/)
 
 _AGENT_PERMISSIONS: dict[str, dict] = {
     "code": {
@@ -54,7 +54,7 @@ _AGENT_PERMISSIONS: dict[str, dict] = {
         "write_scope": "project",
     },
     "research": {
-        "deep_tools": ["Read", "Write", "Glob", "Grep", "WebSearch", "WebFetch"],
+        "deep_tools": ["Read", "Write", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"],
         "fast_tools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
         "write_scope": "context",
     },
@@ -116,11 +116,17 @@ def _make_can_use_tool(
                     return PermissionResultDeny(
                         message="Write restricted to memory dir and context file.",
                     )
-            else:  # "context"
-                if not (file_path == worker_file or file_path.startswith(worker_subdir)):
+            elif write_scope == "context":
+                task_dir_str = str(task_dir)
+                if not (
+                    file_path.startswith(task_dir_str + "/")
+                    or file_path == task_dir_str
+                ):
                     return PermissionResultDeny(
-                        message="Write restricted to context file.",
+                        message=f"Write restricted to task directory: {task_dir}",
                     )
+            else:
+                raise ValueError(f"Unknown write_scope: {write_scope!r}")
 
         return PermissionResultAllow()
 

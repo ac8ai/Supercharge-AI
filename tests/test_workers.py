@@ -9,6 +9,7 @@ from unittest.mock import patch
 import claude_agent_sdk
 import pytest
 
+from supercharge.permissions import _make_can_use_tool
 from supercharge.workers import _build_options, _memory_agent_run
 
 
@@ -179,3 +180,92 @@ class TestBuildOptions:
                 worker_id=None,
             )
         assert options.can_use_tool is None
+
+
+# ── Regression: context-scoped agents can write task files ─────────────────
+
+
+class TestContextWriteScope:
+    """Regression tests for write_scope='context' allowing task directory writes.
+
+    Previously, 'context' restricted writes to only the worker context file
+    (workers/{worker_id}.md), blocking result.md and notes.md in the task root.
+    The fix redefines 'context' to allow writes anywhere in the task directory.
+    """
+
+    def _make_callback(self, tmp_path, agent_type="research"):
+        task_dir = tmp_path / agent_type / "task-001"
+        task_dir.mkdir(parents=True)
+        (task_dir / "workers").mkdir()
+        worker_id = "worker-abc"
+        cb = _make_can_use_tool(
+            agent_type=agent_type,
+            task_dir=task_dir,
+            worker_id=worker_id,
+            project_root=str(tmp_path),
+        )
+        return cb, task_dir, worker_id
+
+    @pytest.mark.anyio
+    async def test_research_worker_can_write_result_md(self, tmp_path: Path):
+        """Regression: research worker can write result.md in task dir."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb, task_dir, _ = self._make_callback(tmp_path)
+        result = await cb("Write", {"file_path": str(task_dir / "result.md")}, {})
+        assert isinstance(result, PermissionResultAllow)
+
+    @pytest.mark.anyio
+    async def test_research_worker_can_write_notes_md(self, tmp_path: Path):
+        """Regression: research worker can write notes.md in task dir."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb, task_dir, _ = self._make_callback(tmp_path)
+        result = await cb("Write", {"file_path": str(task_dir / "notes.md")}, {})
+        assert isinstance(result, PermissionResultAllow)
+
+    @pytest.mark.anyio
+    async def test_research_worker_can_write_worker_context(self, tmp_path: Path):
+        """Context-scoped agents can still write to worker context file."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb, task_dir, worker_id = self._make_callback(tmp_path)
+        worker_file = str(task_dir / "workers" / f"{worker_id}.md")
+        result = await cb("Write", {"file_path": worker_file}, {})
+        assert isinstance(result, PermissionResultAllow)
+
+    @pytest.mark.anyio
+    async def test_research_worker_denied_outside_task_dir(self, tmp_path: Path):
+        """Context-scoped agents cannot write outside their task directory."""
+        from claude_agent_sdk.types import PermissionResultDeny
+
+        cb, _, _ = self._make_callback(tmp_path)
+        result = await cb("Write", {"file_path": str(tmp_path / "src" / "main.py")}, {})
+        assert isinstance(result, PermissionResultDeny)
+
+    @pytest.mark.anyio
+    async def test_plan_worker_can_write_result_md(self, tmp_path: Path):
+        """Same fix applies to plan agent (also context-scoped)."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb, task_dir, _ = self._make_callback(tmp_path, agent_type="plan")
+        result = await cb("Write", {"file_path": str(task_dir / "result.md")}, {})
+        assert isinstance(result, PermissionResultAllow)
+
+    @pytest.mark.anyio
+    async def test_consistency_worker_can_write_result_md(self, tmp_path: Path):
+        """Same fix applies to consistency agent (also context-scoped)."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb, task_dir, _ = self._make_callback(tmp_path, agent_type="consistency")
+        result = await cb("Write", {"file_path": str(task_dir / "result.md")}, {})
+        assert isinstance(result, PermissionResultAllow)
+
+    @pytest.mark.anyio
+    async def test_review_worker_can_write_result_md(self, tmp_path: Path):
+        """Same fix applies to review agent (also context-scoped)."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb, task_dir, _ = self._make_callback(tmp_path, agent_type="review")
+        result = await cb("Write", {"file_path": str(task_dir / "result.md")}, {})
+        assert isinstance(result, PermissionResultAllow)
