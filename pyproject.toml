@@ -1,6 +1,6 @@
 [project]
 name = "supercharge-ai"
-version = "0.2.4"
+version = "0.2.5"
 description = "Multi-agent framework for Claude Code"
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,7 @@ supercharge = "supercharge.cli:supercharge"
 dev = [
     "ruff>=0.8.0",
     "pytest>=8.0.0",
+    "anyio[trio]>=4.0.0",
 ]
 
 [project.urls]
