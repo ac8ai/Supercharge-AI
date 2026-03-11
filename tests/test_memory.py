@@ -569,6 +569,29 @@ class TestSpawnBackgroundMemory:
 
         assert result is None
 
+    def test_popen_object_is_waited_or_tracked(self, tmp_path: Path):
+        """After _spawn_background_memory(), a daemon thread calls proc.wait() to reap the child."""
+        task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir = tmp_path / ".claude" / "SuperchargeAI" / "tasks" / "memory" / task_uuid
+        task_dir.mkdir(parents=True)
+
+        with (
+            patch("supercharge.memory.subprocess.run") as mock_run,
+            patch("supercharge.memory.subprocess.Popen") as mock_popen,
+            patch("supercharge.memory.threading.Thread") as mock_thread,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = task_uuid + "\n"
+            mock_run.return_value.stderr = ""
+            mock_proc = mock_popen.return_value
+
+            result = _spawn_background_memory("# Task content", str(tmp_path))
+
+        assert result == task_uuid
+        # Verify a daemon thread was started with proc.wait as target
+        mock_thread.assert_called_once_with(target=mock_proc.wait, daemon=True)
+        mock_thread.return_value.start.assert_called_once()
+
     def test_writes_task_md(self, tmp_path: Path):
         task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         task_dir = tmp_path / ".claude" / "SuperchargeAI" / "tasks" / "memory" / task_uuid

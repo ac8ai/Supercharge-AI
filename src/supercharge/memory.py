@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -285,7 +286,7 @@ def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | No
         task_md.write_text(task_md_content)
 
         # Spawn background process (fully detached)
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["supercharge", "memory", "run", task_uuid],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
@@ -293,6 +294,8 @@ def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | No
             stderr=subprocess.DEVNULL,
             env={**os.environ, "CLAUDE_PROJECT_DIR": project_dir},
         )
+        # Reap child to prevent zombie; daemon thread exits when wait() returns
+        threading.Thread(target=proc.wait, daemon=True).start()
 
         return task_uuid
     except Exception as exc:

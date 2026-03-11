@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -225,9 +226,10 @@ async def _deep_worker_resume(
     options.resume = worker_id
 
     result_msg = None
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            result_msg = message
+    async with aclosing(query(prompt=prompt, options=options)) as stream:
+        async for message in stream:
+            if isinstance(message, ResultMessage):
+                result_msg = message
 
     if not result_msg:
         raise click.ClickException("No result returned from worker")
@@ -261,12 +263,15 @@ async def _fast_worker_init(
     )
 
     result_msg = None
-    async for message in query(
-        prompt=_build_fast_worker_prompt(task_dir, agent_type, prompt),
-        options=options,
-    ):
-        if isinstance(message, ResultMessage):
-            result_msg = message
+    async with aclosing(
+        query(
+            prompt=_build_fast_worker_prompt(task_dir, agent_type, prompt),
+            options=options,
+        )
+    ) as stream:
+        async for message in stream:
+            if isinstance(message, ResultMessage):
+                result_msg = message
 
     if not result_msg:
         raise click.ClickException("No result returned from worker")
@@ -322,17 +327,18 @@ async def _memory_agent_run(task_uuid: str) -> None:
     )
 
     try:
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
-                if message.is_error:
-                    print(
-                        f"[SuperchargeAI] memory agent error: {message.result}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"[SuperchargeAI] memory agent completed: {task_uuid}",
-                        file=sys.stderr,
-                    )
+        async with aclosing(query(prompt=prompt, options=options)) as stream:
+            async for message in stream:
+                if isinstance(message, ResultMessage):
+                    if message.is_error:
+                        print(
+                            f"[SuperchargeAI] memory agent error: {message.result}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"[SuperchargeAI] memory agent completed: {task_uuid}",
+                            file=sys.stderr,
+                        )
     except Exception as exc:
         print(f"[SuperchargeAI] memory agent failed: {exc}", file=sys.stderr)

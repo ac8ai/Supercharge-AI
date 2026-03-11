@@ -223,7 +223,7 @@ class TestUserPermissions:
         settings_path = tmp_path / ".claude" / "settings.json"
         added = _add_user_permissions(settings_path)
 
-        assert len(added) == 3
+        assert len(added) == 5
         assert settings_path.exists()
 
         settings = json.loads(settings_path.read_text())
@@ -231,6 +231,8 @@ class TestUserPermissions:
             "Bash(supercharge *)",
             "Write(.claude/SuperchargeAI/**)",
             "Edit(.claude/SuperchargeAI/**)",
+            "WebSearch",
+            "WebFetch",
         ]
 
     def test_merges_without_destroying_existing(self, tmp_path: Path):
@@ -242,7 +244,7 @@ class TestUserPermissions:
         settings_path.write_text(json.dumps(existing))
 
         added = _add_user_permissions(settings_path)
-        assert len(added) == 3
+        assert len(added) == 5
 
         settings = json.loads(settings_path.read_text())
         assert "Bash(git *)" in settings["permissions"]["allow"]
@@ -253,14 +255,14 @@ class TestUserPermissions:
         settings_path = tmp_path / "settings.json"
 
         first_added = _add_user_permissions(settings_path)
-        assert len(first_added) == 3
+        assert len(first_added) == 5
 
         second_added = _add_user_permissions(settings_path)
         assert len(second_added) == 0
 
         settings = json.loads(settings_path.read_text())
         # No duplicates
-        assert len(settings["permissions"]["allow"]) == 3
+        assert len(settings["permissions"]["allow"]) == 5
 
     def test_remove_only_removes_ours(self, tmp_path: Path):
         settings_path = tmp_path / "settings.json"

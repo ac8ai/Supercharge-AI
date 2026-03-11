@@ -236,6 +236,10 @@ def subtask_init(
     model: str | None,
 ):
     """Spawn a new Agent SDK worker on a task. Prints JSON {worker_id, result}."""
+    from supercharge.signals import setup_signal_handlers
+
+    setup_signal_handlers()
+
     # Resolve task UUID: --task-uuid flag > SUPERCHARGE_TASK_UUID env var
     # Click's envvar= already handles the fallback, so task_uuid may come
     # from either source. Validate consistency if both are present.
@@ -303,6 +307,10 @@ def subtask_init(
 @click.argument("prompt")
 def subtask_resume(worker_id: str, prompt: str):
     """Resume a deep worker by worker_id. worker_id is the session_id."""
+    from supercharge.signals import setup_signal_handlers
+
+    setup_signal_handlers()
+
     # Verify the worker exists (has a context file)
     worker_file = _find_worker_file(worker_id)
     if not worker_file:
@@ -331,6 +339,9 @@ def memory():
 @click.argument("task_uuid")
 def memory_run(task_uuid: str):
     """Run the memory agent on a task workspace (background process)."""
+    from supercharge.signals import setup_signal_handlers
+
+    setup_signal_handlers()
     asyncio.run(_memory_agent_run(task_uuid))
 
 

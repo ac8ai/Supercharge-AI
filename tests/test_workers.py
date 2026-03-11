@@ -10,8 +10,12 @@ import claude_agent_sdk
 import pytest
 
 from supercharge.permissions import _make_can_use_tool
-from supercharge.workers import _build_options, _memory_agent_run
-
+from supercharge.workers import (
+    _build_options,
+    _deep_worker_resume,
+    _fast_worker_init,
+    _memory_agent_run,
+)
 
 # ── _memory_agent_run: streaming mode bug ──────────────────────────────────
 
@@ -134,6 +138,80 @@ class TestMemoryAgentRun:
         assert captured_options[0].permission_mode == "bypassPermissions"
 
     @pytest.mark.anyio
+    async def test_memory_agent_run_cleans_up_on_exception(self, tmp_path: Path):
+        """When query() raises mid-stream, the async generator is properly closed via aclosing()."""
+        task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir = tmp_path / "memory" / task_uuid
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.md").write_text("# Task\nHarvest memory.")
+
+        generator_closed = False
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            nonlocal generator_closed
+            try:
+                yield claude_agent_sdk.ResultMessage(
+                    subtype="result",
+                    duration_ms=100,
+                    duration_api_ms=80,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="test",
+                    result="partial",
+                )
+                raise RuntimeError("simulated failure mid-stream")
+            finally:
+                generator_closed = True
+
+        with (
+            patch("supercharge.workers._find_task_dir", return_value=task_dir),
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+        ):
+            # Should not raise — _memory_agent_run catches exceptions
+            await _memory_agent_run(task_uuid)
+
+        assert generator_closed, (
+            "The async generator must be closed (via aclosing) even when an exception occurs"
+        )
+
+    @pytest.mark.anyio
+    async def test_memory_agent_run_cleans_up_generator_on_success(self, tmp_path: Path):
+        """On normal completion, the async generator's cleanup runs via aclosing()."""
+        task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir = tmp_path / "memory" / task_uuid
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.md").write_text("# Task\nHarvest memory.")
+
+        generator_closed = False
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            nonlocal generator_closed
+            try:
+                yield claude_agent_sdk.ResultMessage(
+                    subtype="result",
+                    duration_ms=100,
+                    duration_api_ms=80,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="test",
+                    result="done",
+                )
+            finally:
+                generator_closed = True
+
+        with (
+            patch("supercharge.workers._find_task_dir", return_value=task_dir),
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+        ):
+            await _memory_agent_run(task_uuid)
+
+        assert generator_closed, (
+            "The async generator must be closed (via aclosing) after normal completion"
+        )
+
+    @pytest.mark.anyio
     async def test_memory_agent_run_task_not_found(self, tmp_path: Path):
         """_memory_agent_run returns early when task dir is not found."""
         with patch("supercharge.workers._find_task_dir", return_value=None):
@@ -180,6 +258,78 @@ class TestBuildOptions:
                 worker_id=None,
             )
         assert options.can_use_tool is None
+
+
+# ── _deep_worker_resume: async generator cleanup ──────────────────────────
+
+
+class TestDeepWorkerResume:
+    """Test _deep_worker_resume properly cleans up async generators."""
+
+    @pytest.mark.anyio
+    async def test_deep_worker_resume_cleans_up_on_exception(self, tmp_path: Path):
+        """When query() raises mid-stream, the async generator is closed via aclosing()."""
+        worker_id = "test-worker-id"
+        task_dir = tmp_path / "code" / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir.mkdir(parents=True)
+
+        generator_closed = False
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            nonlocal generator_closed
+            try:
+                # Yield a non-result message first, then raise
+                raise RuntimeError("simulated failure")
+                yield  # noqa: RET503 - make this an async generator
+            finally:
+                generator_closed = True
+
+        with (
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+        ):
+            with pytest.raises(RuntimeError, match="simulated failure"):
+                await _deep_worker_resume(worker_id, "test prompt", task_dir, "code")
+
+        assert generator_closed, (
+            "The async generator must be closed (via aclosing) even when an exception occurs"
+        )
+
+
+# ── _fast_worker_init: async generator cleanup ─────────────────────────────
+
+
+class TestFastWorkerInit:
+    """Test _fast_worker_init properly cleans up async generators."""
+
+    @pytest.mark.anyio
+    async def test_fast_worker_init_cleans_up_on_exception(self, tmp_path: Path):
+        """When query() raises mid-stream, the async generator is closed via aclosing()."""
+        task_dir = tmp_path / "code" / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir.mkdir(parents=True)
+
+        generator_closed = False
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            nonlocal generator_closed
+            try:
+                raise RuntimeError("simulated failure")
+                yield  # noqa: RET503 - make this an async generator
+            finally:
+                generator_closed = True
+
+        with (
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+        ):
+            with pytest.raises(RuntimeError, match="simulated failure"):
+                await _fast_worker_init(
+                    task_dir, "code", "test prompt", "worker-id", None, None
+                )
+
+        assert generator_closed, (
+            "The async generator must be closed (via aclosing) even when an exception occurs"
+        )
 
 
 # ── Regression: context-scoped agents can write task files ─────────────────
