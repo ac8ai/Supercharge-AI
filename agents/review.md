@@ -1,7 +1,7 @@
 ---
 name: review
 description: Code review of completed work. Checks for correctness, style, security, and alignment with project conventions.
-tools: Read, Glob, Grep, Bash
+tools: Read, Write, Glob, Grep, Bash
 model: inherit
 ---
 

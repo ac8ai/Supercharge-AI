@@ -1,7 +1,7 @@
 ---
 name: consistency
 description: Check for contradictions, broken references, and duplication. Scoped to changed files by default; full-project sweep on explicit request.
-tools: Read, Glob, Grep, Bash, WebSearch, WebFetch
+tools: Read, Write, Glob, Grep, Bash, WebSearch, WebFetch
 model: inherit
 ---
 

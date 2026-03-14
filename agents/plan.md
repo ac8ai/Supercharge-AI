@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Decompose requests into structured task lists. Use for any non-trivial work before coding. Clarifies ambiguities, breaks down requirements, checks for existing functionality.
-tools: Read, Glob, Grep, Bash, WebSearch, WebFetch
+tools: Read, Write, Glob, Grep, Bash, WebSearch, WebFetch
 model: inherit
 ---
 
