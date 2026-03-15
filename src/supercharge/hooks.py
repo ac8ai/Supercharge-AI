@@ -102,11 +102,10 @@ def _evaluate_pre_tool_use(tool_name: str, tool_input: dict, permission_mode: st
         command = tool_input.get("command", "")
         if command.startswith("supercharge "):
             return _allow("Bash: supercharge CLI command")
-        from supercharge.permissions import _is_dangerous_bash
-
-        matched = _is_dangerous_bash(command)
-        if matched:
-            return _deny(f"Bash: blocked dangerous pattern: {matched}")
+        # Don't auto-deny dangerous patterns at the hook level.
+        # The hook fires for BOTH orchestrator and subagents, and we can't
+        # distinguish them. Passthrough lets the user approve/deny.
+        # Workers are still hard-blocked by the can_use_tool callback.
         return None
 
     if tool_name in ("Write", "Edit"):

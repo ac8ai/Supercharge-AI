@@ -28,8 +28,13 @@ class TestEvaluatePreToolUse:
         result = _evaluate_pre_tool_use("Bash", {"command": "ls -la /tmp"}, "default")
         assert result is None
 
-    def test_bash_dangerous_command_denied(self):
-        """Dangerous Bash commands return deny."""
+    def test_bash_dangerous_command_passthrough(self):
+        """Dangerous Bash commands pass through (user decides, not auto-denied).
+
+        The hook can't distinguish orchestrator from subagent, so dangerous
+        patterns are passed through to user approval. Workers are still
+        hard-blocked by the can_use_tool callback.
+        """
         dangerous = [
             "git push origin main",
             "rm -rf /",
@@ -38,10 +43,7 @@ class TestEvaluatePreToolUse:
         ]
         for cmd in dangerous:
             result = _evaluate_pre_tool_use("Bash", {"command": cmd}, "default")
-            assert result is not None, f"Should deny: {cmd}"
-            assert result["hookSpecificOutput"]["permissionDecision"] == "deny", (
-                f"Should deny: {cmd}"
-            )
+            assert result is None, f"Should passthrough: {cmd}"
 
     def test_bash_safe_non_supercharge_passthrough(self):
         """Safe non-supercharge Bash commands still return None."""
