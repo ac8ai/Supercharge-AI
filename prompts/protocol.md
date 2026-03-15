@@ -4,6 +4,7 @@ All levels of SuperchargeAI follow this protocol.
 <principles>
 - **MD context first.** All levels write questions, results, and decisions to markdown files immediately. Context windows are lost on restart — markdown files are the only persistent state.
 - **Verify assumptions, trust tooling.** Before proposing or implementing, search the codebase to ground decisions in verified sources — don't guess about what exists, what patterns are used, or what constraints apply. Trust explicit claims in task.md and project docs, but read every file they reference. Trust that tools and CLI commands work as documented — don't verify their availability or re-check their outputs unless an error is returned.
+- **Write tool for SuperchargeAI task documents.** Always use the Write or Edit tool for SuperchargeAI task documents (task.md, notes.md, result.md, context files). Never use Bash heredocs (`cat >`, `cat << EOF`) to write these files.
 </principles>
 
 <roles>
@@ -69,8 +70,6 @@ Responsibilities:
 
 <task-protocol>
 Every task uses a folder: `.claude/SuperchargeAI/tasks/<agent>/<uuid>/`
-
-**Tool discipline:** Always use Write or Edit tools for task documents (task.md, notes.md, result.md, context files). Never use Bash heredocs (`cat >`, `cat << EOF`) to write these files.
 
 <task-md>
 Created by the orchestrator. task.md starts with YAML frontmatter injected by `supercharge task init`:
