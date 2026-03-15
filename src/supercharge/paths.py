@@ -3,7 +3,25 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+
+_FULL_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_HEX8_RE = re.compile(r"^[0-9a-f]{8,}$")
+
+
+class AmbiguousPrefixError(Exception):
+    """Raised when a short prefix matches multiple task/worker folders."""
+
+    def __init__(self, prefix: str, matches: list[str]) -> None:
+        self.prefix = prefix
+        self.matches = matches
+        super().__init__(
+            f"Prefix {prefix!r} is ambiguous — matches {len(matches)} entries: "
+            + ", ".join(matches[:5])
+        )
 
 _ENV_PROJECT_DIR = "CLAUDE_PROJECT_DIR"
 _SUPERCHARGE_WORKSPACE_MARKER = "/.claude/SuperchargeAI/"
@@ -110,15 +128,99 @@ def _copy_template(name: str, dest: Path) -> None:
         dest.touch()
 
 
-def _find_task_dir(task_uuid: str) -> Path | None:
-    """Search for a task UUID across all agent types."""
+def _resolve_prefix(prefix: str) -> tuple[str, str] | None:
+    """Resolve a task prefix to ``(full_uuid, folder_name)``.
+
+    Accepts:
+    - A full 36-char UUID (fast exact lookup).
+    - An exact folder name like ``5b6d9c66-implement-auth`` (exact match).
+    - An 8+ hex-char prefix (scans folders whose name starts with *prefix*).
+
+    Returns ``None`` when no match is found.
+
+    Raises:
+        ValueError: if *prefix* is a hex string shorter than 8 characters.
+        AmbiguousPrefixError: if *prefix* matches more than one folder.
+    """
     root = _task_root()
     if not root.exists():
         return None
+
+    # ── Fast path: full UUID ──────────────────────────────────────────
+    if _FULL_UUID_RE.match(prefix):
+        for agent_dir in root.iterdir():
+            if not agent_dir.is_dir():
+                continue
+            candidate = agent_dir / prefix
+            if candidate.is_dir():
+                return (prefix, prefix)
+        # Full UUID didn't match a folder name directly.  The task may live
+        # in a short-named folder (e.g. "5b6d9c66-implement-auth") whose
+        # frontmatter stores this full UUID.  Extract the 8-char prefix and
+        # fall through to the prefix search instead of returning None.
+        prefix = prefix[:8]
+
+    # ── Exact folder name match (e.g. "5b6d9c66-implement-auth") ─────
     for agent_dir in root.iterdir():
         if not agent_dir.is_dir():
             continue
-        candidate = agent_dir / task_uuid
+        candidate = agent_dir / prefix
+        if candidate.is_dir():
+            fm = _read_frontmatter(candidate / "task.md")
+            full_uuid = fm.get("task_uuid", prefix)
+            return (full_uuid, prefix)
+
+    # ── Prefix search (8+ hex chars) ─────────────────────────────────
+    if not _HEX8_RE.match(prefix):
+        # Not pure hex or too short
+        if re.fullmatch(r"[0-9a-f]+", prefix) and len(prefix) < 8:
+            raise ValueError(
+                f"Prefix must be at least 8 hex characters, got {len(prefix)}: {prefix!r}"
+            )
+        # Non-hex string that didn't match as exact folder name
+        return None
+
+    matches: list[tuple[str, str]] = []  # (full_uuid, folder_name)
+    for agent_dir in root.iterdir():
+        if not agent_dir.is_dir():
+            continue
+        for folder in agent_dir.iterdir():
+            if not folder.is_dir():
+                continue
+            if folder.name.startswith(prefix):
+                fm = _read_frontmatter(folder / "task.md")
+                full_uuid = fm.get("task_uuid", folder.name)
+                matches.append((full_uuid, folder.name))
+
+    if len(matches) == 0:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    raise AmbiguousPrefixError(prefix, [m[1] for m in matches])
+
+
+def _find_task_dir(task_uuid: str) -> Path | None:
+    """Search for a task by UUID, prefix, or folder name across all agent types.
+
+    Returns the task directory ``Path`` on success, ``None`` if not found.
+
+    Raises:
+        AmbiguousPrefixError: if a short prefix matches multiple folders.
+    """
+    root = _task_root()
+    if not root.exists():
+        return None
+
+    result = _resolve_prefix(task_uuid)
+    if result is None:
+        return None
+
+    _full_uuid, folder_name = result
+    # Find the folder in agent dirs
+    for agent_dir in root.iterdir():
+        if not agent_dir.is_dir():
+            continue
+        candidate = agent_dir / folder_name
         if candidate.is_dir():
             return candidate
     return None

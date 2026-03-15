@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 
-from supercharge.paths import _task_root
+from supercharge.paths import AmbiguousPrefixError, _task_root
 
 _DEFAULT_MAX_RECURSION_DEPTH = 5
 _ENV_MAX_DEPTH = "SUPERCHARGE_MAX_RECURSION_DEPTH"
@@ -238,21 +238,68 @@ def _is_fast_mode(model: str | None) -> bool:
     return any(fast in model.lower() for fast in fast_models)
 
 
-def _find_worker_file(worker_id: str) -> Path | None:
-    """Search for a worker file across all task directories."""
+def _resolve_worker_prefix(prefix: str) -> tuple[str, Path] | None:
+    """Resolve a worker ID prefix to ``(full_worker_id, worker_file_path)``.
+
+    Scans ``workers/`` directories across all task directories for ``.md``
+    files whose stem starts with *prefix*.
+
+    Returns ``None`` when no match is found.
+
+    Raises:
+        ValueError: if *prefix* is a hex string shorter than 8 characters.
+        AmbiguousPrefixError: if *prefix* matches more than one worker file.
+    """
     root = _task_root()
     if not root.exists():
         return None
+
+    # Validate minimum length for short hex prefixes
+    if re.fullmatch(r"[0-9a-f]+", prefix) and len(prefix) < 8:
+        raise ValueError(
+            f"Prefix must be at least 8 hex characters, got {len(prefix)}: {prefix!r}"
+        )
+
+    matches: list[tuple[str, Path]] = []  # (full_worker_id, file_path)
+
     for agent_dir in root.iterdir():
         if not agent_dir.is_dir():
             continue
         for task_dir in agent_dir.iterdir():
             if not task_dir.is_dir():
                 continue
-            candidate = task_dir / "workers" / f"{worker_id}.md"
-            if candidate.exists():
-                return candidate
-    return None
+            workers_dir = task_dir / "workers"
+            if not workers_dir.is_dir():
+                continue
+            for worker_file in workers_dir.iterdir():
+                if not worker_file.is_file() or worker_file.suffix != ".md":
+                    continue
+                stem = worker_file.stem
+                if stem == prefix:
+                    # Exact match — return immediately
+                    return (stem, worker_file)
+                if stem.startswith(prefix):
+                    matches.append((stem, worker_file))
+
+    if len(matches) == 0:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    raise AmbiguousPrefixError(prefix, [m[0] for m in matches])
+
+
+def _find_worker_file(worker_id: str) -> Path | None:
+    """Search for a worker file by ID or prefix across all task directories.
+
+    Returns the worker file ``Path`` on success, ``None`` if not found.
+
+    Raises:
+        AmbiguousPrefixError: if a short prefix matches multiple worker files.
+    """
+    result = _resolve_worker_prefix(worker_id)
+    if result is None:
+        return None
+    return result[1]
 
 
 def _user_settings_path() -> Path:

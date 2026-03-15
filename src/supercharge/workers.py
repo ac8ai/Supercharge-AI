@@ -17,6 +17,7 @@ from supercharge.paths import (
     _copy_template,
     _find_task_dir,
     _project_dir,
+    _read_frontmatter,
     _read_prompt,
 )
 from supercharge.permissions import (
@@ -166,7 +167,9 @@ def _build_options(
         model=model,
         env={
             _ENV_REMAINING: str(remaining_depth - 1),
-            _ENV_TASK_UUID: task_dir.name,
+            _ENV_TASK_UUID: _read_frontmatter(task_dir / "task.md").get(
+                "task_uuid", task_dir.name
+            ),
             _ENV_WORKER_ID: worker_id or "",
             _ENV_PROJECT_DIR: project_root,
             "CLAUDECODE": "",  # Allow nested Claude Code spawn via Agent SDK

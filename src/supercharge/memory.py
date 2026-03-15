@@ -21,7 +21,14 @@ from supercharge.metrics import _emit
 _ENV_SESSION_AGE_HOURS = "SUPERCHARGE_MEMORY_SESSION_AGE_HOURS"
 _ENV_STALE_DAYS = "SUPERCHARGE_MEMORY_STALE_DAYS"
 
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-"  # 8 hex chars followed by dash (common prefix)
+    r"(?:"
+    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"  # full UUID tail
+    r"|"
+    r".+"  # or any slug (new short-ID folder format)
+    r")$"
+)
 
 _STAMP_TYPE = "supercharge-memory-reviewed"
 
