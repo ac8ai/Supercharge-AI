@@ -73,7 +73,16 @@ Every task uses a folder: `.claude/SuperchargeAI/tasks/<agent>/<uuid>/`
 **Tool discipline:** Always use Write or Edit tools for task documents (task.md, notes.md, result.md, context files). Never use Bash heredocs (`cat >`, `cat << EOF`) to write these files.
 
 <task-md>
-Created by the orchestrator.
+Created by the orchestrator. task.md starts with YAML frontmatter injected by `supercharge task init`:
+```
+---
+task_uuid: <uuid>
+agent_type: <type>
+created_at: <ISO timestamp>
+created_by: <type>:<id>
+---
+```
+The orchestrator writes task content AFTER this frontmatter. Do not remove or modify it.
 
 ```
 # Task
@@ -176,7 +185,7 @@ Agents delegate low-level work to workers via the `supercharge` CLI.
 
 **Spawning a worker:**
 ```
-supercharge subtask init <agent_type> "<prompt>" --task-uuid <task_uuid> --model <model>
+supercharge subtask init <agent_type> "<prompt>" --task-uuid <task_uuid> --model <model> --author "task:<task_uuid>"
 ```
 Returns JSON: `{"worker_id": "...", "result": "..."}` or `{"worker_id": "...", "error": "..."}`.
 

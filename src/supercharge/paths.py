@@ -81,6 +81,11 @@ def _task_root() -> Path:
     return Path(_project_dir()) / ".claude" / "SuperchargeAI" / "tasks"
 
 
+def _archive_root() -> Path:
+    """Archive directory: <project>/.claude/SuperchargeAI/archive/."""
+    return Path(_project_dir()) / ".claude" / "SuperchargeAI" / "archive"
+
+
 def _copy_template(name: str, dest: Path) -> None:
     """Copy a template file from templates/ to dest."""
     src = _cli_data_dir() / "templates" / name
@@ -108,3 +113,25 @@ def _read_prompt(name: str, data_dir: Path) -> str:
     """Read a prompt file, return empty string if missing."""
     path = data_dir / "prompts" / name
     return path.read_text() if path.exists() else ""
+
+
+def _read_frontmatter(path: Path) -> dict[str, str]:
+    """Read YAML frontmatter from a markdown file, stopping at the closing ---.
+
+    Returns a dict of key-value pairs. Reads line-by-line until the closing
+    ``---`` marker (or EOF). Returns empty dict if no frontmatter found.
+    """
+    try:
+        with path.open() as f:
+            if f.readline().strip() != "---":
+                return {}
+            result = {}
+            for line in f:
+                if line.strip() == "---":
+                    break
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    result[key.strip()] = val.strip()
+        return result
+    except OSError:
+        return {}

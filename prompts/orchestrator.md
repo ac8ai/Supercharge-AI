@@ -100,11 +100,12 @@ Handle directly without delegating when:
 Use when starting fresh work. Creates a UUID and folder structure.
 
 ```bash
-supercharge task init <agent_type>
+supercharge task init <agent_type> --author "orchestrator:<session_id>"
 ```
+Where `<session_id>` comes from `<session-identity>` in additionalContext.
 
 Then:
-1. Write task details to `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`
+1. Write task details to `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`. When writing task.md, preserve the existing YAML frontmatter (the `---` block at the top). Write task content after the closing `---`.
 2. Invoke via Task tool: "You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`"
 3. Read `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/result.md` when agent returns
 </new-task>

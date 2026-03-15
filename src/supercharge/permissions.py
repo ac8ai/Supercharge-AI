@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from supercharge.paths import _task_root
@@ -12,17 +13,78 @@ _DEFAULT_MAX_RECURSION_DEPTH = 5
 _ENV_MAX_DEPTH = "SUPERCHARGE_MAX_RECURSION_DEPTH"
 _ENV_REMAINING = "SUPERCHARGE_RECURSION_REMAINING"
 _ENV_TASK_UUID = "SUPERCHARGE_TASK_UUID"
+_ENV_WORKER_ID = "SUPERCHARGE_WORKER_ID"
 
 _DEFAULT_FAST_MODELS: set[str] = {"haiku"}
 _ENV_FAST_MODELS = "SUPERCHARGE_FAST_MODELS"
 
 _SUPERCHARGE_PERMISSIONS = [
     "Bash(supercharge *)",
+    "Bash(cat)",
+    "Bash(cat *)",
+    "Bash(ls)",
+    "Bash(ls *)",
+    "Bash(find *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(echo *)",
+    "Bash(wc *)",
+    "Bash(diff *)",
+    "Bash(stat *)",
+    "Bash(pwd)",
+    "Bash(which *)",
+    "Bash(env)",
+    "Bash(env *)",
     "Write(.claude/SuperchargeAI/**)",
     "Edit(.claude/SuperchargeAI/**)",
     "WebSearch",
     "WebFetch",
 ]
+
+# Dangerous command patterns blocked for workers and Task-tool agents.
+# The redirect pattern is checked separately with quote-stripping logic
+# so that `>` inside quoted strings (e.g., `python -c "x > 0"`) is allowed.
+_DANGEROUS_BASH_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\bgit\s+push\b"),
+    re.compile(r"\bgit\s+commit\b"),
+    re.compile(r"\bgit\s+reset\b"),
+    re.compile(r"\bgit\s+rebase\b"),
+    re.compile(r"\bgit\s+checkout\s+--"),
+    re.compile(r"\brm\s+-[a-z]*[rf]"),
+    re.compile(r"\bmkfs\b"),
+    re.compile(r"\bdd\s+if="),
+    re.compile(r"\bcurl\b.*\|\s*(ba)?sh"),
+    re.compile(r"\bwget\b.*\|\s*(ba)?sh"),
+]
+
+# Matches shell redirects like `> file`, `>> file`, `1> file` but NOT
+# stderr redirects `2>&1`, `2>/dev/null`.  Applied after stripping quoted strings.
+_REDIRECT_PATTERN = re.compile(r"(?<!2)>{1,2}\s*(?!&)\S")
+
+
+def _strip_quotes(command: str) -> str:
+    """Remove single- and double-quoted strings from a command.
+
+    This allows redirect detection to ignore `>` inside quotes.
+    """
+    return re.sub(r"""(?:"[^"]*"|'[^']*')""", "", command)
+
+
+def _is_dangerous_bash(command: str) -> str | None:
+    """Check if a bash command matches any dangerous pattern.
+
+    Returns the matched pattern string if dangerous, None if safe.
+    Redirect detection strips quoted strings first so that `>` inside
+    quotes (e.g., ``python -c "x > 0"``) is not flagged.
+    """
+    # Check redirect pattern on quote-stripped command
+    stripped = _strip_quotes(command)
+    if _REDIRECT_PATTERN.search(stripped):
+        return _REDIRECT_PATTERN.pattern
+    for pattern in _DANGEROUS_BASH_PATTERNS:
+        if pattern.search(command):
+            return pattern.pattern
+    return None
 
 # ── Per-agent tool permissions ──────────────────────────────────────────────
 # deep_tools: allowed_tools for deep workers (opus/sonnet)
@@ -90,12 +152,17 @@ def _make_can_use_tool(
     memory_dir = str(Path(project_root) / ".claude" / "SuperchargeAI" / "memory") + "/"
 
     async def _can_use_tool(tool_name, input_data, context):
-        # Block task creation (only orchestrator creates tasks)
+        # Block task creation and dangerous commands
         if tool_name == "Bash":
             cmd = input_data.get("command", "")
             if "supercharge task init" in cmd:
                 return PermissionResultDeny(
                     message="Only the orchestrator creates task workspaces.",
+                )
+            matched = _is_dangerous_bash(cmd)
+            if matched:
+                return PermissionResultDeny(
+                    message=f"Blocked dangerous command pattern: {matched}",
                 )
 
         # Scope Write/Edit by agent type

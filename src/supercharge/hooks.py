@@ -102,6 +102,11 @@ def _evaluate_pre_tool_use(tool_name: str, tool_input: dict, permission_mode: st
         command = tool_input.get("command", "")
         if command.startswith("supercharge "):
             return _allow("Bash: supercharge CLI command")
+        from supercharge.permissions import _is_dangerous_bash
+
+        matched = _is_dangerous_bash(command)
+        if matched:
+            return _deny(f"Bash: blocked dangerous pattern: {matched}")
         return None
 
     if tool_name in ("Write", "Edit"):
@@ -238,6 +243,11 @@ def hook_session_start():
 
     hook_dir = _hook_data_dir()
     parts = [_read_prompt("protocol.md", hook_dir), _read_prompt("orchestrator.md", hook_dir)]
+
+    session_id = input_data.get("session_id", "")
+    if session_id:
+        parts.append(f'\n<session-identity session_id="{session_id}" />')
+
     content = "\n".join(p for p in parts if p)
 
     if content:
@@ -250,10 +260,20 @@ def hook_session_start():
 @click.command("hook-subagent-start", hidden=True)
 def hook_subagent_start():
     """SubagentStart hook: inject shared protocol + agent prompt into agents."""
-    json.load(sys.stdin)
+    input_data = json.load(sys.stdin)
+    session_id = input_data.get("session_id", "")
+    agent_id = input_data.get("agent_id", "")
+    agent_type = input_data.get("agent_type", "")
 
     hook_dir = _hook_data_dir()
     parts = [_read_prompt("protocol.md", hook_dir), _read_prompt("agent.md", hook_dir)]
+
+    if session_id or agent_id:
+        parts.append(
+            f'\n<agent-identity session_id="{session_id}" '
+            f'agent_id="{agent_id}" agent_type="{agent_type}" />'
+        )
+
     content = "\n".join(p for p in parts if p)
     if content:
         _emit_hook("SubagentStart", content, hook_dir)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from contextlib import aclosing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ from supercharge.permissions import (
     _DEFAULT_PERMS,
     _ENV_REMAINING,
     _ENV_TASK_UUID,
+    _ENV_WORKER_ID,
     _get_remaining_depth,
     _make_can_use_tool,
 )
@@ -45,6 +47,7 @@ def _build_deep_worker_prompt(
     worker_file: Path,
     prompt: str,
     remaining_depth: int,
+    worker_id: str = "",
 ) -> str:
     """Compose the initial prompt sent to a deep worker."""
     budget = remaining_depth - 1
@@ -52,7 +55,8 @@ def _build_deep_worker_prompt(
         depth_note = (
             f"Recursion budget: {budget} levels remaining. "
             f"To spawn sub-workers: "
-            f'`supercharge subtask init <agent_type> "<prompt>" --model <model>` '
+            f'`supercharge subtask init <agent_type> "<prompt>"'
+            f' --model <model> --author "worker:{worker_id}"` '
             f"(SUPERCHARGE_TASK_UUID is auto-set in your env)"
         )
     else:
@@ -87,6 +91,7 @@ def _prepare_worker_file(
     task_dir: Path,
     worker_id: str,
     prompt: str,
+    author: str | None = None,
 ) -> Path:
     """Create the worker context file from template and fill in assignment."""
     workers_dir = task_dir / "workers"
@@ -99,6 +104,22 @@ def _prepare_worker_file(
         f"## Assignment\n\n{prompt}\n",
         1,
     )
+
+    # Prepend YAML frontmatter
+    task_uuid = os.environ.get(_ENV_TASK_UUID, "")
+    frontmatter_fields = [
+        f"worker_id: {worker_id}",
+        f"agent_type: {task_dir.parent.name}",
+        f"spawned_at: {datetime.now(timezone.utc).isoformat()}",
+        "model: deep",
+    ]
+    if author:
+        frontmatter_fields.append(f"created_by: {author}")
+    elif task_uuid:
+        frontmatter_fields.append(f"created_by: task:{task_uuid}")
+    frontmatter = "---\n" + "\n".join(frontmatter_fields) + "\n---\n\n"
+    content = frontmatter + content
+
     worker_file.write_text(content)
     return worker_file
 
@@ -145,6 +166,7 @@ def _build_options(
         env={
             _ENV_REMAINING: str(remaining_depth - 1),
             _ENV_TASK_UUID: task_dir.name,
+            _ENV_WORKER_ID: worker_id or "",
             _ENV_PROJECT_DIR: project_root,
             "CLAUDECODE": "",  # Allow nested Claude Code spawn via Agent SDK
         },
@@ -187,6 +209,7 @@ async def _deep_worker_init(
                 worker_file,
                 prompt,
                 remaining_depth,
+                worker_id=worker_id,
             ),
             session_id=worker_id,
         )

@@ -17,13 +17,17 @@ You are always the **last agent** invoked on a task. By the time you run, all ot
    - **Behavior issues** go to `memory/methodology/behavior/` — agent step definitions that need adjustment
    - **Flow issues** go to `memory/methodology/flows/` — workflow order, missing or redundant steps
 4. **Update or create memory files** — merge new learnings into existing files where relevant. Create new files for genuinely new topics. Each file has `# Content` (read by all agents) and `# Notes` (for memory agent only)
+   - When creating memory entries from a **research** or **plan** task that was archived, add `archive_ref: archive/<filename>.md` to the YAML frontmatter of each created memory file.
 5. **Validate memory file format** — ensure every memory file has:
-   - YAML frontmatter with `title`, `keywords`, `created`, `updated` fields
+   - YAML frontmatter with `title`, `keywords`, `created`, `updated` fields, and optionally `archive_ref`
    - A `# Content` heading (must not be stale — if the content has changed, update the heading to reflect current content)
    - A `# Notes` heading
    - After editing an existing file, verify that the title and Content heading still accurately describe the file's content. Update them if they've become obsolete.
 6. **Prune** — remove or consolidate memory that is outdated, superseded, or no longer relevant
-7. **Delete the task folder** — after harvesting is complete, run `supercharge task cleanup <uuid>` to safely remove the task directory. The learnings now live in memory; the task folder is no longer needed
+7. **Clean up the task folder** — after harvesting is complete:
+   - For **research** and **plan** tasks: run `supercharge task archive <uuid1> [uuid2] ...` to create archives and remove the original folders.
+   - For all other agent types: run `supercharge task cleanup <uuid1> [uuid2] ...` to safely remove the task directories.
+   Both commands accept multiple UUIDs for batch operation.
 </workflow>
 
 <principles>

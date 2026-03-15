@@ -7,14 +7,22 @@ import asyncio
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
 
 from supercharge.hooks import hook_pre_tool_use, hook_session_start, hook_subagent_start
-from supercharge.paths import _cli_data_dir, _copy_template, _find_task_dir, _task_root
+from supercharge.paths import (
+    _archive_root,
+    _cli_data_dir,
+    _copy_template,
+    _find_task_dir,
+    _task_root,
+)
 from supercharge.permissions import (
     _ENV_TASK_UUID,
+    _ENV_WORKER_ID,
     _add_user_permissions,
     _find_worker_file,
     _get_remaining_depth,
@@ -149,6 +157,48 @@ def permissions_remove():
         click.echo("No SuperchargeAI permissions found in settings.json.")
 
 
+# ── author validation ────────────────────────────────────────────────────────
+
+
+def _validate_author(author: str) -> str:
+    """Validate author signature format: <type>:<id>.
+
+    Validates:
+    - orchestrator:<id> -- format check only (non-empty id)
+    - task:<uuid> -- looks up via _find_task_dir(), rejects if not found
+    - worker:<id> -- looks up via _find_worker_file(), rejects if not found
+
+    Returns the validated author string.
+    Raises click.ClickException on invalid format or failed lookup.
+    """
+    if ":" not in author:
+        raise click.ClickException(
+            f"Invalid author format: '{author}'. Expected <type>:<id>."
+        )
+
+    author_type, _, author_id = author.partition(":")
+
+    if not author_id:
+        raise click.ClickException(
+            f"Invalid author format: '{author}'. ID must not be empty."
+        )
+
+    if author_type == "orchestrator":
+        return author
+    elif author_type == "task":
+        if not _find_task_dir(author_id):
+            raise click.ClickException(f"Task '{author_id}' not found.")
+        return author
+    elif author_type == "worker":
+        if not _find_worker_file(author_id):
+            raise click.ClickException(f"Worker '{author_id}' not found.")
+        return author
+    else:
+        raise click.ClickException(
+            f"Unknown author type: '{author_type}'. Expected orchestrator, task, or worker."
+        )
+
+
 # ── task ─────────────────────────────────────────────────────────────────────
 
 
@@ -159,7 +209,11 @@ def task():
 
 @task.command("init")
 @click.argument("agent_type")
-def task_init(agent_type: str):
+@click.option(
+    "--author", default=None,
+    help="Author: orchestrator:<session_id>, task:<uuid>, or worker:<id>",
+)
+def task_init(agent_type: str, author: str | None):
     """Create a new task workspace. Prints the UUID."""
     task_id = str(uuid.uuid4())
     task_dir = _task_root() / agent_type / task_id
@@ -170,16 +224,30 @@ def task_init(agent_type: str):
     _copy_template("result.md", task_dir / "result.md")
     _copy_template("notes.md", task_dir / "notes.md")
 
+    # Inject YAML frontmatter into task.md
+    task_md = task_dir / "task.md"
+    frontmatter_fields = [
+        f"task_uuid: {task_id}",
+        f"agent_type: {agent_type}",
+        f"created_at: {datetime.now(timezone.utc).isoformat()}",
+    ]
+    if author:
+        _validate_author(author)
+        frontmatter_fields.append(f"created_by: {author}")
+    frontmatter = "---\n" + "\n".join(frontmatter_fields) + "\n---\n\n"
+    original = task_md.read_text()
+    task_md.write_text(frontmatter + original)
+
     click.echo(task_id)
 
 
 @task.command("cleanup")
-@click.argument("task_uuid")
-def task_cleanup(task_uuid: str):
-    """Safely delete a task folder after memory harvesting.
+@click.argument("task_uuids", nargs=-1, required=True)
+def task_cleanup(task_uuids: tuple[str, ...]):
+    """Safely delete task folders after memory harvesting.
 
     Validates the UUID format and confirms the path is inside
-    .claude/SuperchargeAI/tasks/ before removing.
+    .claude/SuperchargeAI/tasks/ before removing. Accepts multiple UUIDs.
     """
     import re
     import shutil
@@ -187,24 +255,159 @@ def task_cleanup(task_uuid: str):
     uuid_re = re.compile(
         r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     )
-    if not uuid_re.match(task_uuid):
-        raise click.ClickException(f"Invalid UUID format: {task_uuid}")
 
-    task_dir = _find_task_dir(task_uuid)
-    if not task_dir:
-        raise click.ClickException(f"Task {task_uuid} not found")
+    for task_uuid in task_uuids:
+        try:
+            if not uuid_re.match(task_uuid):
+                click.echo(f"Error: Invalid UUID format: {task_uuid}", err=True)
+                continue
 
-    # Verify the resolved path is actually inside the task root
-    task_root = _task_root()
-    try:
-        task_dir.resolve().relative_to(task_root.resolve())
-    except ValueError:
-        raise click.ClickException(
-            f"Task directory {task_dir} is outside task root {task_root}"
-        )
+            task_dir = _find_task_dir(task_uuid)
+            if not task_dir:
+                click.echo(f"Error: Task {task_uuid} not found", err=True)
+                continue
 
-    shutil.rmtree(task_dir)
-    click.echo(f"Removed {task_dir}")
+            # Verify the resolved path is actually inside the task root
+            task_root = _task_root()
+            try:
+                task_dir.resolve().relative_to(task_root.resolve())
+            except ValueError:
+                click.echo(
+                    f"Error: Task directory {task_dir} is outside task root {task_root}",
+                    err=True,
+                )
+                continue
+
+            shutil.rmtree(task_dir)
+            click.echo(f"Removed {task_dir}")
+        except Exception as e:
+            click.echo(f"Error processing {task_uuid}: {e}", err=True)
+
+
+@task.command("archive")
+@click.argument("task_uuids", nargs=-1, required=True)
+@click.option("--title", default=None, help="Archive title (default: from task.md)")
+@click.option("--force", is_flag=True, default=False, help="Archive even if result.md is missing")
+def task_archive(task_uuids: tuple[str, ...], title: str | None, force: bool):
+    """Archive research/plan task folders to .claude/SuperchargeAI/archive/.
+
+    Extracts the Report section from result.md, writes an archive file with
+    YAML frontmatter, and removes the original task directory.
+    Accepts multiple UUIDs for batch operation.
+    """
+    import re
+    import shutil
+
+    uuid_re = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+
+    for task_uuid in task_uuids:
+        try:
+            # 1. Validate UUID format
+            if not uuid_re.match(task_uuid):
+                click.echo(f"Error: Invalid UUID format: {task_uuid}", err=True)
+                continue
+
+            # 2. Find task dir
+            task_dir = _find_task_dir(task_uuid)
+            if not task_dir:
+                click.echo(f"Error: Task {task_uuid} not found", err=True)
+                continue
+
+            # 3. Verify inside task root
+            task_root = _task_root()
+            try:
+                task_dir.resolve().relative_to(task_root.resolve())
+            except ValueError:
+                click.echo(
+                    f"Error: Task directory {task_dir} is outside task root {task_root}",
+                    err=True,
+                )
+                continue
+
+            # 4. Check agent type
+            agent_type = task_dir.parent.name
+            if agent_type not in ("research", "plan"):
+                click.echo(
+                    f"Error: Archive is only for research/plan tasks. "
+                    f"Use 'supercharge task cleanup' instead. (got: {agent_type})",
+                    err=True,
+                )
+                continue
+
+            # 5. Read task.md
+            task_md_path = task_dir / "task.md"
+            task_md_content = task_md_path.read_text() if task_md_path.exists() else ""
+
+            # 6. Read result.md
+            result_md_path = task_dir / "result.md"
+            report_section = ""
+            if not result_md_path.exists():
+                if not force:
+                    click.echo(
+                        f"Error: {task_uuid} has no result.md. Use --force to archive anyway.",
+                        err=True,
+                    )
+                    continue
+                msg = f"Warning: {task_uuid} has no result.md, archiving task.md only."
+                click.echo(msg, err=True)
+            else:
+                result_content = result_md_path.read_text()
+                # Extract ## Report section (to next ## heading or EOF)
+                report_match = re.search(
+                    r"(## Report\s*\n)(.*?)(?=\n## |\Z)",
+                    result_content,
+                    re.DOTALL,
+                )
+                if report_match:
+                    report_section = report_match.group(1) + report_match.group(2).rstrip()
+                else:
+                    report_section = result_content.rstrip()
+
+            # 7. Determine title
+            archive_title = title
+            if not archive_title:
+                heading_match = re.search(r"^#\s+(.+)$", task_md_content, re.MULTILINE)
+                if heading_match:
+                    raw_title = heading_match.group(1).strip()
+                    # Slugify: lowercase, replace non-alnum with hyphens, truncate
+                    slug = re.sub(r"[^a-z0-9]+", "-", raw_title.lower()).strip("-")[:50]
+                    archive_title = slug if slug else "untitled"
+                else:
+                    archive_title = "untitled"
+
+            # 8. Build filename
+            now = datetime.now(timezone.utc)
+            timestamp = now.strftime("%Y-%m-%dT%H%M")
+            filename = f"{timestamp}_{agent_type}_{archive_title}.md"
+
+            # 9. Create archive dir
+            archive_dir = _archive_root()
+            archive_dir.mkdir(parents=True, exist_ok=True)
+
+            # 10. Write archive file
+            archive_path = archive_dir / filename
+            frontmatter = (
+                "---\n"
+                f"task_uuid: {task_uuid}\n"
+                f"agent_type: {agent_type}\n"
+                f"archived_at: {now.isoformat()}\n"
+                "---\n\n"
+            )
+            parts = [frontmatter, task_md_content.rstrip()]
+            if report_section:
+                parts.append("\n\n---\n\n" + report_section)
+            archive_path.write_text("\n".join(parts) + "\n")
+
+            # 11. Remove original
+            shutil.rmtree(task_dir)
+
+            # 12. Print archive path
+            click.echo(str(archive_path))
+
+        except Exception as e:
+            click.echo(f"Error processing {task_uuid}: {e}", err=True)
 
 
 # ── subtask ──────────────────────────────────────────────────────────────────
@@ -229,11 +432,16 @@ def subtask():
     default=None,
     help="Model override (sonnet, opus, haiku)",
 )
+@click.option(
+    "--author", default=None,
+    help="Author: task:<uuid> or worker:<id>",
+)
 def subtask_init(
     agent_type: str,
     prompt: str,
     task_uuid: str | None,
     model: str | None,
+    author: str | None,
 ):
     """Spawn a new Agent SDK worker on a task. Prints JSON {worker_id, result}."""
     from supercharge.signals import setup_signal_handlers
@@ -272,6 +480,16 @@ def subtask_init(
     if not task_dir:
         raise click.ClickException(f"Task {task_uuid} not found")
 
+    # Resolve author: explicit --author > auto-infer from env
+    if author:
+        _validate_author(author)
+    else:
+        env_worker_id = os.environ.get(_ENV_WORKER_ID)
+        if env_worker_id:
+            author = f"worker:{env_worker_id}"
+        elif env_uuid:
+            author = f"task:{env_uuid}"
+
     worker_id = str(uuid.uuid4())
 
     if fast:
@@ -286,7 +504,7 @@ def subtask_init(
             )
         )
     else:
-        worker_file = _prepare_worker_file(task_dir, worker_id, prompt)
+        worker_file = _prepare_worker_file(task_dir, worker_id, prompt, author=author)
         result = asyncio.run(
             _deep_worker_init(
                 task_dir,

@@ -419,3 +419,66 @@ class TestContextWriteScope:
         cb, task_dir, _ = self._make_callback(tmp_path, agent_type="review")
         result = await cb("Write", {"file_path": str(task_dir / "result.md")}, {})
         assert isinstance(result, PermissionResultAllow)
+
+
+# ── _make_can_use_tool: dangerous bash blocking ────────────────────────────
+
+
+class TestCanUseToolDangerousBash:
+    """Test that _make_can_use_tool blocks dangerous bash commands."""
+
+    def _make_callback(self, tmp_path, agent_type="code"):
+        task_dir = tmp_path / agent_type / "task-001"
+        task_dir.mkdir(parents=True)
+        (task_dir / "workers").mkdir()
+        worker_id = "worker-abc"
+        cb = _make_can_use_tool(
+            agent_type=agent_type,
+            task_dir=task_dir,
+            worker_id=worker_id,
+            project_root=str(tmp_path),
+        )
+        return cb
+
+    @pytest.mark.anyio
+    async def test_dangerous_bash_denied(self, tmp_path: Path):
+        """Dangerous bash commands are denied by can_use_tool."""
+        from claude_agent_sdk.types import PermissionResultDeny
+
+        cb = self._make_callback(tmp_path)
+        dangerous_commands = [
+            "echo hello > file.txt",
+            "git push origin main",
+            "git commit -m 'test'",
+            "rm -rf /tmp/dir",
+        ]
+        for cmd in dangerous_commands:
+            result = await cb("Bash", {"command": cmd}, {})
+            assert isinstance(result, PermissionResultDeny), f"Should deny: {cmd}"
+
+    @pytest.mark.anyio
+    async def test_safe_bash_allowed(self, tmp_path: Path):
+        """Safe bash commands are allowed by can_use_tool."""
+        from claude_agent_sdk.types import PermissionResultAllow
+
+        cb = self._make_callback(tmp_path)
+        safe_commands = [
+            "ls -la",
+            "cat file.txt",
+            "git status",
+            "git log",
+            "supercharge subtask init code 'test'",
+        ]
+        for cmd in safe_commands:
+            result = await cb("Bash", {"command": cmd}, {})
+            assert isinstance(result, PermissionResultAllow), f"Should allow: {cmd}"
+
+    @pytest.mark.anyio
+    async def test_supercharge_task_init_still_denied(self, tmp_path: Path):
+        """supercharge task init is still denied (existing behavior preserved)."""
+        from claude_agent_sdk.types import PermissionResultDeny
+
+        cb = self._make_callback(tmp_path)
+        result = await cb("Bash", {"command": "supercharge task init code"}, {})
+        assert isinstance(result, PermissionResultDeny)
+        assert "orchestrator" in result.message.lower()
