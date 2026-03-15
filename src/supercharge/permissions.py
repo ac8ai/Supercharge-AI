@@ -256,8 +256,10 @@ def _find_worker_file(worker_id: str) -> Path | None:
 
 
 def _user_settings_path() -> Path:
-    """Return path to ~/.claude/settings.json."""
-    return Path.home() / ".claude" / "settings.json"
+    """Return path to user-level settings.json, respecting CLAUDE_CONFIG_DIR."""
+    from supercharge.paths import _user_config_dir
+
+    return _user_config_dir() / "settings.json"
 
 
 def _add_user_permissions(settings_path: Path) -> list[str]:

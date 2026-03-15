@@ -221,8 +221,10 @@ def _ensure_project_dir(input_data: dict) -> None:
     cwd = input_data.get("cwd", "")
     if not cwd:
         return
+    from supercharge.paths import _user_config_dir
+
     project_slug = cwd.replace("/", "-")
-    project_dir = Path.home() / ".claude" / "projects" / project_slug
+    project_dir = _user_config_dir() / "projects" / project_slug
     try:
         project_dir.mkdir(parents=True, exist_ok=True)
     except OSError:

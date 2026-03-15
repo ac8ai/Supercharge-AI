@@ -9,6 +9,21 @@ _ENV_PROJECT_DIR = "CLAUDE_PROJECT_DIR"
 _SUPERCHARGE_WORKSPACE_MARKER = "/.claude/SuperchargeAI/"
 
 
+def _user_config_dir() -> Path:
+    """Return user-level Claude config dir, respecting CLAUDE_CONFIG_DIR.
+
+    CLAUDE_CONFIG_DIR is a user-set env var that controls where Claude Code
+    stores user-level config and state files (credentials, projects, settings).
+    It does NOT affect the project-level .claude/ directory.
+
+    If not set or empty, defaults to ~/.claude (standard location).
+    """
+    val = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if val:
+        return Path(val)
+    return Path.home() / ".claude"
+
+
 def _hook_data_dir() -> Path:
     """Return data directory for hook execution (prompts/).
 
@@ -21,7 +36,7 @@ def _hook_data_dir() -> Path:
         if val:
             return Path(val)
 
-    plugins_cache = Path.home() / ".claude" / "plugins" / "cache"
+    plugins_cache = _user_config_dir() / "plugins" / "cache"
     if plugins_cache.is_dir():
         for marketplace_dir in plugins_cache.iterdir():
             sa_dir = marketplace_dir / "supercharge-ai"
