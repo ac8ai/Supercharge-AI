@@ -18,10 +18,10 @@ Track subtasks in the `# Open tasks` section of `notes.md` using structured entr
 ```
 # Open tasks
 
-- [ ] [worker:a1b2c3] Set up database schema
-- [~] [worker:d4e5f6] Implement login endpoint (after: worker:a1b2c3)
-- [x] [worker:j0k1l2] Create migration script
-- [ ] Write integration tests (after: worker:d4e5f6)
+- [ ] [worker:a1b2c3d4] Set up database schema
+- [~] [worker:d4e5f6a1] Implement login endpoint (after: worker:a1b2c3d4)
+- [x] [worker:j0k1l2m3] Create migration script
+- [ ] Write integration tests (after: worker:d4e5f6a1)
 ```
 
 **Status:** `[ ]` pending, `[~]` in progress, `[x]` completed.
