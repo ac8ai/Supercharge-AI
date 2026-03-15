@@ -251,25 +251,41 @@ def task():
     help="Author: orchestrator:<session_id>, task:<uuid>, or worker:<id>",
 )
 @click.option(
-    "--name", default=None,
+    "--name", required=True,
     help="Human-readable task name (e.g. 'Implement Auth Middleware').",
 )
 @click.option(
     "--full", "print_full", is_flag=True, default=False,
     help="Print full UUID instead of 8-char short ID.",
 )
-def task_init(agent_type: str, author: str | None, name: str | None, print_full: bool):
+def task_init(agent_type: str, author: str | None, name: str, print_full: bool):
     """Create a new task workspace. Prints the short ID (or full UUID with --full)."""
-    task_id = str(uuid.uuid4())
+    root = _task_root()
+
+    # Generate UUID, check for 8-char prefix collision, regenerate if needed
+    for _ in range(10):
+        task_id = str(uuid.uuid4())
+        prefix = task_id[:8]
+        collision = False
+        if root.exists():
+            for agent_dir in root.iterdir():
+                if agent_dir.is_dir():
+                    for d in agent_dir.iterdir():
+                        if d.is_dir() and d.name.startswith(prefix):
+                            collision = True
+                            break
+                if collision:
+                    break
+        if not collision:
+            break
+    else:
+        raise click.ClickException("Failed to generate unique short ID after 10 attempts")
 
     # Determine folder name
-    if name:
-        slug = _name_to_slug(name)
-        folder_name = f"{task_id[:8]}-{slug}" if slug else task_id[:8]
-    else:
-        folder_name = task_id[:8]
+    slug = _name_to_slug(name)
+    folder_name = f"{prefix}-{slug}" if slug else prefix
 
-    task_dir = _task_root() / agent_type / folder_name
+    task_dir = root / agent_type / folder_name
 
     task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -281,9 +297,8 @@ def task_init(agent_type: str, author: str | None, name: str | None, print_full:
     task_md = task_dir / "task.md"
     frontmatter_fields = [
         f"task_uuid: {task_id}",
+        f"task_name: {name}",
     ]
-    if name:
-        frontmatter_fields.append(f"task_name: {name}")
     frontmatter_fields.extend([
         f"agent_type: {agent_type}",
         f"created_at: {datetime.now(timezone.utc).isoformat()}",
@@ -293,9 +308,9 @@ def task_init(agent_type: str, author: str | None, name: str | None, print_full:
         frontmatter_fields.append(f"created_by: {author}")
     frontmatter = "---\n" + "\n".join(frontmatter_fields) + "\n---\n\n"
 
-    # Build content: optional name header + original template
+    # Build content: name header + original template
     original = task_md.read_text()
-    header = f"# {name}\n\n" if name else ""
+    header = f"# {name}\n\n"
     task_md.write_text(frontmatter + header + original)
 
     _emit(

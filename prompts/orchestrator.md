@@ -33,7 +33,7 @@ Use TodoWrite to track task progress. Each item follows a standard format:
 - `content`: `[agent_type] Imperative verb phrase` or `[agent_type:short_uuid] Imperative verb phrase` (once the task UUID is known)
 - `activeForm`: same pattern in present participle form
 
-Use the first 6 characters of the task UUID as `short_uuid`. Add it after `supercharge task init` returns; omit it when planning ahead before task creation.
+Use the first 8 characters of the task UUID as `short_uuid` (this is also what `supercharge task init` prints by default). Add it after `supercharge task init` returns; omit it when planning ahead before task creation.
 
 **Dependency notation:** When a task depends on another task completing first, append `(after: agent_type:short_uuid)` to the content and activeForm. Multiple dependencies are comma-separated. Dependencies are informational — they help the orchestrator reason about ordering but are not enforced by tooling. Only add when actual ordering constraints exist between parallel tasks. Omit when ordering is obvious from the standard workflow (plan → code → review → document → consistency → memory).
 
@@ -43,14 +43,14 @@ Examples:
 content: "[plan] Decompose auth feature into tasks"
 activeForm: "[plan] Decomposing auth feature into tasks"
 
-content: "[code:d4e5f6] Implement login endpoint with JWT"
-activeForm: "[code:d4e5f6] Implementing login endpoint with JWT"
+content: "[code:d4e5f6a1] Implement login endpoint with JWT"
+activeForm: "[code:d4e5f6a1] Implementing login endpoint with JWT"
 
-content: "[code:d4e5f6] Implement login endpoint (after: plan:a4d032)"
-activeForm: "[code:d4e5f6] Implementing login endpoint (after: plan:a4d032)"
+content: "[code:d4e5f6a1] Implement login endpoint (after: plan:a4d032b5)"
+activeForm: "[code:d4e5f6a1] Implementing login endpoint (after: plan:a4d032b5)"
 
-content: "[code:b7c8d9] Integrate auth middleware (after: code:d4e5f6, code:e1f2a3)"
-activeForm: "[code:b7c8d9] Integrating auth middleware (after: code:d4e5f6, code:e1f2a3)"
+content: "[code:b7c8d9e2] Integrate auth middleware (after: code:d4e5f6a1, code:e1f2a3b4)"
+activeForm: "[code:b7c8d9e2] Integrating auth middleware (after: code:d4e5f6a1, code:e1f2a3b4)"
 ```
 
 When a task completes, keep the same label and mark it completed. When an agent returns with questions, update the item description to reflect the blocker.
@@ -97,24 +97,26 @@ Handle directly without delegating when:
 
 <delegating>
 <new-task>
-Use when starting fresh work. Creates a UUID and folder structure.
+Use when starting fresh work. Creates a short ID and folder structure.
 
 ```bash
-supercharge task init <agent_type> --author "orchestrator:<session_id>"
+supercharge task init <agent_type> --name "<Human Readable Name>" --author "orchestrator:<session_id>"
 ```
 Where `<session_id>` comes from `<session-identity>` in additionalContext.
+The `--name` flag is optional but recommended — it creates a human-readable folder like `5b6d9c66-implement-auth/`.
+The command prints the 8-char short ID (e.g., `5b6d9c66`). Use `--full` to get the full UUID.
 
 Then:
-1. Write task details to `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`. When writing task.md, preserve the existing YAML frontmatter (the `---` block at the top). Write task content after the closing `---`.
-2. Invoke via Task tool: "You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`"
-3. Read `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/result.md` when agent returns
+1. Find the task folder (use the short ID to locate it under `.claude/SuperchargeAI/tasks/<agent_type>/`). Write task details to `task.md`. Preserve the existing YAML frontmatter (the `---` block at the top). Write task content after the closing `---`.
+2. Invoke via Task tool: "You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<task_folder>/task.md`"
+3. Read `.claude/SuperchargeAI/tasks/<agent_type>/<task_folder>/result.md` when agent returns
 </new-task>
 
 <restart>
 Use when an agent ran out of context, hit a limit, or needs to continue after you answered its questions. The agent starts fresh but picks up context from its own `notes.md`.
 
-Invoke via Task tool with the same UUID:
-"You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<uuid>/task.md`"
+Invoke via Task tool with the same task folder:
+"You are a `<agent_type>` agent. Your task is at `.claude/SuperchargeAI/tasks/<agent_type>/<task_folder>/task.md`"
 </restart>
 
 <resume>

@@ -26,7 +26,7 @@ Track subtasks in the `# Open tasks` section of `notes.md` using structured entr
 
 **Status:** `[ ]` pending, `[~]` in progress, `[x]` completed.
 
-**Labels:** `[worker:short_id]` for worker-backed tasks (first 6 chars of worker_id). Omit the label for tasks you handle directly.
+**Labels:** `[worker:short_id]` for worker-backed tasks (first 8 chars of worker_id). Omit the label for tasks you handle directly.
 
 **Dependencies:** `(after: worker:short_id)` when ordering matters between parallel subtasks. Omit when ordering is obvious or sequential.
 

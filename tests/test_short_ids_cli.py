@@ -90,7 +90,7 @@ class TestTaskInitName:
             patch("supercharge.cli._copy_template", side_effect=_mock_copy_template),
             patch("supercharge.cli._emit"),
         ):
-            result = runner.invoke(supercharge, ["task", "init", "code"])
+            result = runner.invoke(supercharge, ["task", "init", "--name", "Test Task", "code"])
         assert result.exit_code == 0, result.output
         output = result.output.strip()
         assert len(output) == 8
@@ -106,7 +106,7 @@ class TestTaskInitName:
             patch("supercharge.cli._copy_template", side_effect=_mock_copy_template),
             patch("supercharge.cli._emit"),
         ):
-            result = runner.invoke(supercharge, ["task", "init", "--full", "code"])
+            result = runner.invoke(supercharge, ["task", "init", "--full", "--name", "Test Task", "code"])
         assert result.exit_code == 0, result.output
         output = result.output.strip()
         # Full UUID is 36 chars

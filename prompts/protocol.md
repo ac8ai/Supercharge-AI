@@ -30,7 +30,7 @@ Responsibilities:
 **Agents** — specialized subagents invoked via the Task tool. Each agent receives its role and workflow from its agent definition file.
 
 Responsibilities:
-- Reads task from `.claude/SuperchargeAI/tasks/<agent>/<uuid>/task.md`
+- Reads task from `.claude/SuperchargeAI/tasks/<agent>/<task_folder>/task.md`
 - Reads every file referenced in task.md — never assumes contents
 - Maintains working memory in `notes.md` (the agent's only persistent context)
 - Delegates low-level work to workers via `supercharge subtask init` (see `<workers>` section)
@@ -69,13 +69,14 @@ Responsibilities:
 </roles>
 
 <task-protocol>
-Every task uses a folder: `.claude/SuperchargeAI/tasks/<agent>/<uuid>/`
+Every task uses a folder: `.claude/SuperchargeAI/tasks/<agent>/<short_id>/` (e.g., `5b6d9c66/` or `5b6d9c66-implement-auth/`)
 
 <task-md>
 Created by the orchestrator. task.md starts with YAML frontmatter injected by `supercharge task init`:
 ```
 ---
-task_uuid: <uuid>
+task_uuid: <full-uuid>
+task_name: <human-readable name>
 agent_type: <type>
 created_at: <ISO timestamp>
 created_by: <type>:<id>
@@ -184,7 +185,7 @@ Agents delegate low-level work to workers via the `supercharge` CLI.
 
 **Spawning a worker:**
 ```
-supercharge subtask init <agent_type> "<prompt>" --task-uuid <task_uuid> --model <model> --author "task:<task_uuid>"
+supercharge subtask init <agent_type> "<prompt>" --task-uuid <short_id> --model <model> --author "task:<short_id>"
 ```
 Returns JSON: `{"worker_id": "...", "result": "..."}` or `{"worker_id": "...", "error": "..."}`.
 
