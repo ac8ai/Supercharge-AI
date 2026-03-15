@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 from supercharge.hooks import hook_pre_tool_use, hook_session_start, hook_subagent_start
+from supercharge.metrics import _emit
 from supercharge.paths import (
     _archive_root,
     _cli_data_dir,
@@ -238,6 +239,13 @@ def task_init(agent_type: str, author: str | None):
     original = task_md.read_text()
     task_md.write_text(frontmatter + original)
 
+    _emit(
+        "task_init",
+        task_uuid=task_id,
+        agent_type=agent_type,
+        parent_id=author or "",
+    )
+
     click.echo(task_id)
 
 
@@ -279,6 +287,7 @@ def task_cleanup(task_uuids: tuple[str, ...]):
                 continue
 
             shutil.rmtree(task_dir)
+            _emit("task_cleanup", task_uuid=task_uuid)
             click.echo(f"Removed {task_dir}")
         except Exception as e:
             click.echo(f"Error processing {task_uuid}: {e}", err=True)
@@ -403,6 +412,8 @@ def task_archive(task_uuids: tuple[str, ...], title: str | None, force: bool):
             # 11. Remove original
             shutil.rmtree(task_dir)
 
+            _emit("task_archive", task_uuid=task_uuid, agent_type=agent_type)
+
             # 12. Print archive path
             click.echo(str(archive_path))
 
@@ -517,6 +528,16 @@ def subtask_init(
                 model,
             )
         )
+
+    _emit(
+        "subtask_init",
+        task_uuid=task_uuid,
+        worker_id=worker_id,
+        agent_type=agent_type,
+        parent_id=author or "",
+        detail=json.dumps({"model": model or "default", "fast": fast}),
+    )
+
     click.echo(json.dumps(result))
 
 
@@ -542,6 +563,9 @@ def subtask_resume(worker_id: str, prompt: str):
     agent_type = task_dir.parent.name
 
     result = asyncio.run(_deep_worker_resume(worker_id, prompt, task_dir, agent_type))
+
+    _emit("subtask_resume", worker_id=worker_id)
+
     click.echo(json.dumps(result))
 
 

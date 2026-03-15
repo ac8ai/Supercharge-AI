@@ -9,6 +9,7 @@ from pathlib import Path
 
 import click
 
+from supercharge.metrics import _emit
 from supercharge.paths import _SUPERCHARGE_WORKSPACE_MARKER, _hook_data_dir, _read_prompt
 
 
@@ -254,6 +255,12 @@ def hook_session_start():
     if content:
         _emit_hook("SessionStart", content, hook_dir)
 
+    _emit(
+        "session_start",
+        session_id=input_data.get("session_id", ""),
+        detail=input_data.get("source", ""),
+    )
+
     # Background memory harvesting (non-blocking, after hook output)
     _trigger_background_memory(input_data)
 
@@ -279,6 +286,13 @@ def hook_subagent_start():
     if content:
         _emit_hook("SubagentStart", content, hook_dir)
 
+    _emit(
+        "subagent_start",
+        session_id=session_id,
+        agent_id=agent_id,
+        agent_type=agent_type,
+    )
+
 
 @click.command("hook-pre-tool-use", hidden=True)
 def hook_pre_tool_use():
@@ -290,5 +304,16 @@ def hook_pre_tool_use():
     permission_mode = input_data.get("permission_mode", "default")
 
     result = _evaluate_pre_tool_use(tool_name, tool_input, permission_mode)
+
+    _emit(
+        "tool_use",
+        session_id=input_data.get("session_id", ""),
+        tool_name=tool_name,
+        detail=json.dumps(
+            {k: v[:200] if isinstance(v, str) else v for k, v in tool_input.items()},
+            default=str,
+        ),
+    )
+
     if result is not None:
         json.dump(result, sys.stdout)

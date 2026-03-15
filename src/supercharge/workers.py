@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from supercharge.metrics import _emit
 from supercharge.paths import (
     _ENV_PROJECT_DIR,
     _cli_data_dir,
@@ -200,6 +201,13 @@ async def _deep_worker_init(
     client = ClaudeSDKClient(options=options)
 
     result_msg = None
+    _emit(
+        "worker_start",
+        worker_id=worker_id,
+        task_uuid=task_dir.name,
+        agent_type=agent_type,
+        detail="deep",
+    )
     try:
         await client.connect()
         await client.query(
@@ -217,6 +225,16 @@ async def _deep_worker_init(
             if isinstance(message, ResultMessage):
                 result_msg = message
     finally:
+        detail = "error" if (result_msg and result_msg.is_error) else "success"
+        if not result_msg:
+            detail = "error: no result"
+        _emit(
+            "worker_end",
+            worker_id=worker_id,
+            task_uuid=task_dir.name,
+            agent_type=agent_type,
+            detail=detail,
+        )
         await client.disconnect()
 
     if not result_msg:
@@ -286,15 +304,34 @@ async def _fast_worker_init(
     )
 
     result_msg = None
-    async with aclosing(
-        query(
-            prompt=_build_fast_worker_prompt(task_dir, agent_type, prompt),
-            options=options,
+    _emit(
+        "worker_start",
+        worker_id=worker_id,
+        task_uuid=task_dir.name,
+        agent_type=agent_type,
+        detail="fast",
+    )
+    try:
+        async with aclosing(
+            query(
+                prompt=_build_fast_worker_prompt(task_dir, agent_type, prompt),
+                options=options,
+            )
+        ) as stream:
+            async for message in stream:
+                if isinstance(message, ResultMessage):
+                    result_msg = message
+    finally:
+        detail = "error" if (result_msg and result_msg.is_error) else "success"
+        if not result_msg:
+            detail = "error: no result"
+        _emit(
+            "worker_end",
+            worker_id=worker_id,
+            task_uuid=task_dir.name,
+            agent_type=agent_type,
+            detail=detail,
         )
-    ) as stream:
-        async for message in stream:
-            if isinstance(message, ResultMessage):
-                result_msg = message
 
     if not result_msg:
         raise click.ClickException("No result returned from worker")

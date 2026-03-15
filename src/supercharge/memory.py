@@ -16,6 +16,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from supercharge.metrics import _emit
+
 _ENV_SESSION_AGE_HOURS = "SUPERCHARGE_MEMORY_SESSION_AGE_HOURS"
 _ENV_STALE_DAYS = "SUPERCHARGE_MEMORY_STALE_DAYS"
 
@@ -296,6 +298,8 @@ def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | No
         )
         # Reap child to prevent zombie; daemon thread exits when wait() returns
         threading.Thread(target=proc.wait, daemon=True).start()
+
+        _emit("memory_spawn", task_uuid=task_uuid, detail="background")
 
         return task_uuid
     except Exception as exc:
