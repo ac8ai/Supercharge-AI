@@ -7,7 +7,8 @@ updated: <YYYY-MM-DD>
 
 # Content
 
-<Actionable knowledge. "Do X when Y" not "we noticed Z". Keep concise for agents to scan quickly.>
+<For project memory: actionable knowledge for agents working in this codebase. "Do X when Y" not "we noticed Z".>
+<For methodology memory: document what went wrong and the correction. These are improvement candidates for SuperchargeAI's prompts, tools, or code — not instructions for other agents.>
 
 # Notes
 

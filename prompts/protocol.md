@@ -161,11 +161,16 @@ Maintained by the `memory` agent in `.claude/SuperchargeAI/memory/`:
 
 ```
 memory/
-├── project/          # Project-specific gotchas and patterns
+├── project/          # Project-specific gotchas and patterns (read by all agents)
 └── methodology/
-    ├── behavior/     # Agent behavior instructions
-    └── flows/        # Workflow adjustments
+    ├── behavior/     # Learnings about agent behavior issues
+    └── flows/        # Learnings about workflow gaps
 ```
+
+**Two types with different audiences:**
+
+- `project/` — Project-specific gotchas and patterns. Read by all agents to avoid repeating mistakes in this codebase.
+- `methodology/` — Learnings about SuperchargeAI's own shortcomings: agent misbehavior, missing guardrails, workflow gaps. Read only by the memory agent. These are an improvement backlog — each one represents a prompt, tool, or code fix that should be made to SuperchargeAI itself. Other agents do NOT consult methodology memory.
 
 Memory files MUST include YAML frontmatter:
 ```yaml
@@ -177,7 +182,7 @@ updated: <YYYY-MM-DD>
 ---
 ```
 
-Each memory file has `# Content` (read by all agents) and `# Notes` (for memory agent only).
+Each memory file has `# Content` and `# Notes` (for memory agent only).
 </memory>
 
 <workers>
@@ -217,7 +222,7 @@ Multi-line scripts go in `.claude/SuperchargeAI/scripts/` with `lowercase_name.e
 <tips>
 - The `supercharge` CLI is always available when this protocol is active.
 - If WebSearch or WebFetch fails or is unavailable, fall back to CLI tools (`curl`, `wget`) via Bash. Do not abandon web retrieval on the first failure.
-- When encountering unfamiliar errors or planning in a new domain, consult `.claude/SuperchargeAI/memory/` — memory files have `keywords` in frontmatter for faster lookup.
+- When encountering unfamiliar errors or planning in a new domain, consult `.claude/SuperchargeAI/memory/project/` — project memory files have `keywords` in frontmatter for faster lookup. Do not consult `memory/methodology/` — that is for the memory agent only.
 - **Token economy**: Read selectively based on information need. Use Grep/Glob to narrow scope before reading full files. Don't re-verify previous agents' claims; do read their references.
 - **Trust vs verify**: Trust structural claims from previous agents ("file X changed"). Read referenced files for behavioral understanding and context, not to re-verify claims.
 </tips>
