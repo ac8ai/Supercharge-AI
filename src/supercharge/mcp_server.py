@@ -4,8 +4,6 @@ Allows users to review and approve/reject methodology memory contributions
 from within a Claude Code conversation via the MCP protocol.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 
@@ -30,7 +28,7 @@ def _create_server():  # noqa: C901
     Raises ImportError if the ``mcp`` package is not installed.
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import Context, FastMCP
     except ImportError:
         raise ImportError(
             "MCP support requires the mcp package. "
@@ -40,7 +38,7 @@ def _create_server():  # noqa: C901
     mcp_server = FastMCP("supercharge-contribute")
 
     @mcp_server.tool()
-    async def review_contributions(ctx) -> str:
+    async def review_contributions(ctx: Context) -> str:
         """Review pending methodology memory contributions.
 
         Presents each contribution candidate for user review via elicitation.

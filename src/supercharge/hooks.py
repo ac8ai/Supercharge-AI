@@ -2,15 +2,150 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
+import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 
 from supercharge.metrics import _emit
 from supercharge.paths import _SUPERCHARGE_WORKSPACE_MARKER, _hook_data_dir, _read_prompt
+
+# ── Settings allowlist caching and matching ─────────────────────────────────
+
+# WORKAROUND: Claude Code subagents don't inherit settings.json permissions.
+# The functions below (_load_settings_allowlist, _tool_matches_pattern,
+# _check_settings_allowlist) re-implement allowlist matching so our PreToolUse
+# hook can auto-approve tools for agents that the user already approved.
+# Remove when upstream bugs #18950, #22665, #28584 are fixed.
+_cached_allowlist: list[str] | None = None
+
+# Regex to parse allowlist entries like "Bash(git:*)" or "Write(.claude/**)"
+_ALLOWLIST_ENTRY_RE = re.compile(r"^(\w+)(?:\((.+)\))?$")
+
+
+def _load_settings_allowlist() -> list[str]:
+    """Load and cache merged permission allowlists from all settings files.
+
+    Reads from (in order):
+    - ~/.claude/settings.json
+    - ~/.claude/settings.local.json
+    - .claude/settings.json (project)
+    - .claude/settings.local.json (project)
+
+    Returns the merged deduplicated list of allow patterns.
+    """
+    global _cached_allowlist
+    if _cached_allowlist is not None:
+        return _cached_allowlist
+
+    from supercharge.paths import _user_config_dir
+
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    # Global settings
+    user_dir = _user_config_dir()
+    # Project settings
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+
+    candidates = [
+        user_dir / "settings.json",
+        user_dir / "settings.local.json",
+    ]
+    if project_dir:
+        candidates.append(Path(project_dir) / ".claude" / "settings.json")
+        candidates.append(Path(project_dir) / ".claude" / "settings.local.json")
+
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            data = json.loads(path.read_text())
+            allow = data.get("permissions", {}).get("allow", [])
+            for entry in allow:
+                if isinstance(entry, str) and entry not in seen:
+                    seen.add(entry)
+                    patterns.append(entry)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    _cached_allowlist = patterns
+    return _cached_allowlist
+
+
+def _reset_allowlist_cache() -> None:
+    """Reset the cached allowlist (for testing)."""
+    global _cached_allowlist
+    _cached_allowlist = None
+
+
+def _tool_matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
+    """Check if a tool call matches a single allowlist pattern.
+
+    Pattern formats:
+    - "ToolName" — matches all calls to that tool
+    - "Bash(cmd:*)" or "Bash(cmd *)" — matches Bash where command starts with prefix
+    - "Bash(exact command)" — matches exact command
+    - "Write(glob)" / "Edit(glob)" — matches file_path against glob
+    - "WebFetch(domain:example.com)" — matches URL domain
+    - "WebSearch" — matches all WebSearch calls
+    """
+    m = _ALLOWLIST_ENTRY_RE.match(pattern)
+    if not m:
+        return False
+
+    pattern_tool = m.group(1)
+    pattern_param = m.group(2)  # None if no parentheses
+
+    if pattern_tool != tool_name:
+        return False
+
+    # No parameter constraint — matches all calls to this tool
+    if pattern_param is None:
+        return True
+
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        # "Bash(prefix:*)" — command starts with prefix
+        if pattern_param.endswith(":*"):
+            prefix = pattern_param[:-2]
+            return command.startswith(prefix)
+        # "Bash(prefix *)" — command starts with "prefix "
+        if pattern_param.endswith(" *"):
+            prefix = pattern_param[:-1]  # keep trailing space
+            return command.startswith(prefix)
+        # Exact match (no wildcard)
+        return command == pattern_param
+
+    if tool_name in ("Write", "Edit"):
+        file_path = tool_input.get("file_path", "")
+        # Glob matching against the file path
+        return fnmatch.fnmatch(file_path, pattern_param)
+
+    if tool_name == "WebFetch":
+        url = tool_input.get("url", "")
+        if pattern_param.startswith("domain:"):
+            domain = pattern_param[7:]
+            try:
+                parsed = urlparse(url)
+                return parsed.hostname == domain
+            except Exception:
+                return False
+        return False
+
+    # For any other tool with a parameter, we can't match specifics
+    return False
+
+
+def _check_settings_allowlist(tool_name: str, tool_input: dict) -> bool:
+    """Check if a tool call matches any pattern in the settings allowlists."""
+    allowlist = _load_settings_allowlist()
+    return any(_tool_matches_pattern(tool_name, tool_input, p) for p in allowlist)
 
 
 def _allow(reason: str) -> dict:
@@ -107,16 +242,24 @@ def _evaluate_pre_tool_use(tool_name: str, tool_input: dict, permission_mode: st
         # The hook fires for BOTH orchestrator and subagents, and we can't
         # distinguish them. Passthrough lets the user approve/deny.
         # Workers are still hard-blocked by the can_use_tool callback.
+        if _check_settings_allowlist(tool_name, tool_input):
+            return _allow("Bash: matches settings.json allowlist")
         return None
 
     if tool_name in ("Write", "Edit"):
         file_path = tool_input.get("file_path", "")
         if _SUPERCHARGE_WORKSPACE_MARKER in file_path:
             return _allow(f"{tool_name}: SuperchargeAI workspace file")
+        if _check_settings_allowlist(tool_name, tool_input):
+            return _allow(f"{tool_name}: matches settings.json allowlist")
         return None
 
     if tool_name == "Task":
         return _evaluate_task_call(tool_input, permission_mode)
+
+    # For any other tool (WebSearch, WebFetch, etc.), check allowlist
+    if _check_settings_allowlist(tool_name, tool_input):
+        return _allow(f"{tool_name}: matches settings.json allowlist")
 
     return None
 

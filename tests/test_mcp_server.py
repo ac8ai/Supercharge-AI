@@ -4,48 +4,75 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from supercharge.mcp_server import _check_mcp_available, _create_server
 
-# ── Helper ────────────────────────────────────────────────────────────────
-
-
-def _write_memory_file(
-    path: Path,
-    title: str = "Test Memory",
-    keywords: list[str] | None = None,
-    contribution_candidate: bool = True,
-    contribution_status: str | None = None,
-    body: str = "# Content\n\nMemory content here.\n",
-) -> None:
-    """Write a memory markdown file with simple YAML frontmatter."""
-    if keywords is None:
-        keywords = ["testing", "automation"]
-    kw_str = ", ".join(keywords)
-    lines = [
-        "---",
-        f"title: {title}",
-        f"keywords: [{kw_str}]",
-        f"contribution_candidate: {'true' if contribution_candidate else 'false'}",
-    ]
-    if contribution_status is not None:
-        lines.append(f"contribution_status: {contribution_status}")
-    lines.extend(["---", "", body])
-    path.write_text("\n".join(lines))
+# ── Helpers ──────────────────────────────────────────────────────────────
 
 
 def _make_elicitation_result(action: str = "accept", data: dict | None = None):
-    """Create a mock elicitation result."""
+    """Create a mock elicitation result with .action and .data attributes."""
     result = MagicMock()
     result.action = action
     result.data = data
     return result
 
 
-# ── _check_mcp_available ──────────────────────────────────────────────────
+def _make_ctx(
+    return_value=None,
+    side_effect=None,
+):
+    """Create a mock MCP context with ctx.session.send_elicitation as AsyncMock."""
+    ctx = MagicMock()
+    ctx.session = MagicMock()
+    ctx.session.send_elicitation = AsyncMock(
+        return_value=return_value,
+        side_effect=side_effect,
+    )
+    return ctx
+
+
+def _make_candidate(
+    tmp_path: Path,
+    name: str = "pattern.md",
+    title: str = "Test Pattern",
+    keywords: list[str] | None = None,
+    category: str = "behavior",
+    content: str = "# Content\n\nMemory content here.\n",
+) -> dict:
+    """Create a candidate dict matching contribute.list_candidates output."""
+    if keywords is None:
+        keywords = ["testing", "automation"]
+    filepath = tmp_path / category / name
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    filepath.touch()
+    return {
+        "path": filepath,
+        "title": title,
+        "keywords": keywords,
+        "category": category,
+        "content": content,
+    }
+
+
+# ── Fixture: extract tool from server ────────────────────────────────────
+
+
+@pytest.fixture
+def _get_tool():
+    """Extract the review_contributions Tool object from a FastMCP server."""
+    if not _check_mcp_available():
+        pytest.skip("mcp package not installed")
+    server = _create_server()
+    tool = server._tool_manager.get_tool("review_contributions")
+    assert tool is not None, "review_contributions tool not registered"
+    return tool
+
+
+# ── _check_mcp_available ─────────────────────────────────────────────────
 
 
 class TestCheckMcpAvailable:
@@ -61,7 +88,7 @@ class TestCheckMcpAvailable:
             assert _check_mcp_available() is False
 
 
-# ── _create_server ────────────────────────────────────────────────────────
+# ── _create_server ───────────────────────────────────────────────────────
 
 
 class TestCreateServer:
@@ -75,162 +102,313 @@ class TestCreateServer:
     @pytest.mark.skipif(not _check_mcp_available(), reason="mcp package not installed")
     def test_server_has_review_contributions_tool(self):
         server = _create_server()
-        # FastMCP registers tools internally; verify the tool name is registered
         assert server is not None
 
 
-# ── review_contributions tool ─────────────────────────────────────────────
+# ── review_contributions tool ────────────────────────────────────────────
 
 
 class TestReviewContributions:
-    """Test the review_contributions tool logic."""
+    """Integration tests that invoke the review_contributions tool via FastMCP."""
 
     @pytest.mark.anyio
-    async def test_no_candidates_returns_no_candidates_status(self, tmp_path: Path):
-        """When no candidates exist, returns no_candidates status."""
-        methodology_dir = tmp_path / "methodology"
-        methodology_dir.mkdir()
+    async def test_no_candidates(self, _get_tool, tmp_path: Path):
+        """No candidates -> returns {"status": "no_candidates", ...}."""
+        tool = _get_tool
+        ctx = _make_ctx()
 
-        _ctx = MagicMock()
-
-        with patch("supercharge.mcp_server.run_server"):
-            # Import the tool function by creating the server and extracting it
-            # Instead, test the logic directly by importing and mocking
-            from supercharge.contribute import list_candidates
-
-            with (
-                patch(
-                    "supercharge.contribute.list_candidates",
-                    return_value=[],
-                ) as _mock_list,
-                patch(
-                    "supercharge.paths._user_methodology_dir",
-                    return_value=methodology_dir,
-                ),
-            ):
-                # Simulate what the tool does
-                candidates = list_candidates(methodology_dir)
-                assert candidates == []
-                result = json.dumps({
-                    "status": "no_candidates",
-                    "message": "No contribution candidates found.",
-                })
-                parsed = json.loads(result)
-                assert parsed["status"] == "no_candidates"
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=[]),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
+            assert result["status"] == "no_candidates"
 
     @pytest.mark.anyio
-    async def test_approve_action_calls_submit_and_mark(self, tmp_path: Path):
-        """Approving a candidate calls submit_contribution and mark_submitted."""
-        behavior_dir = tmp_path / "behavior"
-        behavior_dir.mkdir()
-        mem_file = behavior_dir / "pattern.md"
-        _write_memory_file(mem_file, title="Test Pattern", keywords=["testing"])
+    async def test_single_candidate_approve(self, _get_tool, tmp_path: Path):
+        """Approve single candidate -> submit_contribution + mark_submitted called."""
+        tool = _get_tool
+        candidate = _make_candidate(tmp_path, title="Good Pattern")
+        elicitation_result = _make_elicitation_result(
+            action="accept", data={"action": "approve"}
+        )
+        ctx = _make_ctx(return_value=elicitation_result)
 
-        candidate = {
-            "path": mem_file,
-            "title": "Test Pattern",
-            "keywords": ["testing"],
-            "category": "behavior",
-            "content": "# Content\n\nMemory content here.\n",
-        }
-
-        submission_result = {
+        submission = {
             "action": "created",
             "issue_url": "https://github.com/ac8ai/Supercharge-AI/issues/42",
             "issue_number": 42,
         }
 
         with (
+            patch("supercharge.contribute.list_candidates", return_value=[candidate]),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
             patch(
-                "supercharge.contribute.submit_contribution",
-                return_value=submission_result,
+                "supercharge.contribute.submit_contribution", return_value=submission
             ) as mock_submit,
             patch("supercharge.contribute.mark_submitted") as mock_mark,
         ):
-            # Simulate approve action
-            from supercharge.contribute import mark_submitted, submit_contribution
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
 
-            result = submit_contribution(candidate["path"])
-            mark_submitted(candidate["path"], result["issue_url"])
+            assert result["approved"] == 1
+            assert result["rejected"] == 0
+            assert result["skipped"] == 0
+            assert len(result["issues"]) == 1
+            assert result["issues"][0]["url"] == submission["issue_url"]
 
-            mock_submit.assert_called_once_with(mem_file)
+            mock_submit.assert_called_once_with(candidate["path"])
             mock_mark.assert_called_once_with(
-                mem_file,
-                "https://github.com/ac8ai/Supercharge-AI/issues/42",
+                candidate["path"], submission["issue_url"]
             )
 
     @pytest.mark.anyio
-    async def test_reject_action_calls_mark_rejected(self, tmp_path: Path):
-        """Rejecting a candidate calls mark_rejected."""
-        behavior_dir = tmp_path / "behavior"
-        behavior_dir.mkdir()
-        mem_file = behavior_dir / "pattern.md"
-        _write_memory_file(mem_file, title="Bad Pattern", keywords=["testing"])
+    async def test_single_candidate_reject(self, _get_tool, tmp_path: Path):
+        """Reject single candidate -> mark_rejected called."""
+        tool = _get_tool
+        candidate = _make_candidate(tmp_path, title="Bad Pattern")
+        elicitation_result = _make_elicitation_result(
+            action="accept", data={"action": "reject"}
+        )
+        ctx = _make_ctx(return_value=elicitation_result)
 
-        with patch("supercharge.contribute.mark_rejected") as mock_reject:
-            from supercharge.contribute import mark_rejected
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=[candidate]),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
+            patch("supercharge.contribute.mark_rejected") as mock_reject,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
 
-            mark_rejected(mem_file)
-            mock_reject.assert_called_once_with(mem_file)
-
-    @pytest.mark.anyio
-    async def test_skip_action_leaves_file_unchanged(self, tmp_path: Path):
-        """Skipping a candidate does not modify any files."""
-        behavior_dir = tmp_path / "behavior"
-        behavior_dir.mkdir()
-        mem_file = behavior_dir / "pattern.md"
-        _write_memory_file(mem_file, title="Skip Pattern", keywords=["testing"])
-
-        original_content = mem_file.read_text()
-
-        # Skipping = no calls to submit/mark functions
-        # File content should be unchanged
-        assert mem_file.read_text() == original_content
+            assert result["approved"] == 0
+            assert result["rejected"] == 1
+            assert result["skipped"] == 0
+            mock_reject.assert_called_once_with(candidate["path"])
 
     @pytest.mark.anyio
-    async def test_summary_counts_correct(self):
-        """Summary correctly counts approved, rejected, and skipped."""
-        # Simulate processing 3 candidates with different actions
-        actions = ["approve", "reject", "skip"]
-        approved = sum(1 for a in actions if a == "approve")
-        rejected = sum(1 for a in actions if a == "reject")
-        skipped = sum(1 for a in actions if a == "skip")
+    async def test_single_candidate_skip(self, _get_tool, tmp_path: Path):
+        """Skip single candidate -> no mutations, skipped=1."""
+        tool = _get_tool
+        candidate = _make_candidate(tmp_path, title="Maybe Pattern")
+        elicitation_result = _make_elicitation_result(
+            action="accept", data={"action": "skip"}
+        )
+        ctx = _make_ctx(return_value=elicitation_result)
 
-        summary = {
-            "approved": approved,
-            "rejected": rejected,
-            "skipped": skipped,
-            "issues": [],
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=[candidate]),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
+            patch("supercharge.contribute.submit_contribution") as mock_submit,
+            patch("supercharge.contribute.mark_submitted") as mock_mark,
+            patch("supercharge.contribute.mark_rejected") as mock_reject,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
+
+            assert result["approved"] == 0
+            assert result["rejected"] == 0
+            assert result["skipped"] == 1
+            mock_submit.assert_not_called()
+            mock_mark.assert_not_called()
+            mock_reject.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_multiple_candidates_accept_all(self, _get_tool, tmp_path: Path):
+        """Multiple candidates + accept_all -> all submitted."""
+        tool = _get_tool
+        candidates = [
+            _make_candidate(tmp_path, name="a.md", title="Pattern A"),
+            _make_candidate(tmp_path, name="b.md", title="Pattern B"),
+        ]
+        # First elicitation: accept_all
+        accept_all_result = _make_elicitation_result(
+            action="accept", data={"action": "accept_all"}
+        )
+        ctx = _make_ctx(return_value=accept_all_result)
+
+        submission_a = {
+            "action": "created",
+            "issue_url": "https://github.com/ac8ai/Supercharge-AI/issues/10",
+            "issue_number": 10,
+        }
+        submission_b = {
+            "action": "created",
+            "issue_url": "https://github.com/ac8ai/Supercharge-AI/issues/11",
+            "issue_number": 11,
         }
 
-        assert summary["approved"] == 1
-        assert summary["rejected"] == 1
-        assert summary["skipped"] == 1
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=candidates),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch(
+                "supercharge.contribute.submit_contribution",
+                side_effect=[submission_a, submission_b],
+            ) as mock_submit,
+            patch("supercharge.contribute.mark_submitted") as mock_mark,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
+
+            assert result["approved"] == 2
+            assert result["rejected"] == 0
+            assert result["skipped"] == 0
+            assert len(result["issues"]) == 2
+            assert mock_submit.call_count == 2
+            assert mock_mark.call_count == 2
 
     @pytest.mark.anyio
-    async def test_approved_candidate_appears_in_issues_list(self, tmp_path: Path):
-        """Approved candidates appear in the issues list with title, url, action."""
-        issues: list[dict] = []
+    async def test_multiple_candidates_review_individually(
+        self, _get_tool, tmp_path: Path
+    ):
+        """Multiple candidates + review_individually -> each reviewed separately."""
+        tool = _get_tool
+        candidates = [
+            _make_candidate(tmp_path, name="a.md", title="Pattern A"),
+            _make_candidate(tmp_path, name="b.md", title="Pattern B"),
+        ]
+
+        # First elicitation: review_individually
+        # Then: approve first, reject second
+        review_individually = _make_elicitation_result(
+            action="accept", data={"action": "review_individually"}
+        )
+        approve_result = _make_elicitation_result(
+            action="accept", data={"action": "approve"}
+        )
+        reject_result = _make_elicitation_result(
+            action="accept", data={"action": "reject"}
+        )
+        ctx = _make_ctx(
+            side_effect=[review_individually, approve_result, reject_result]
+        )
 
         submission = {
             "action": "created",
-            "issue_url": "https://github.com/ac8ai/Supercharge-AI/issues/99",
-            "issue_number": 99,
+            "issue_url": "https://github.com/ac8ai/Supercharge-AI/issues/20",
+            "issue_number": 20,
         }
 
-        issues.append({
-            "title": "My Pattern",
-            "url": submission["issue_url"],
-            "action": submission["action"],
-        })
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=candidates),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
+            patch(
+                "supercharge.contribute.submit_contribution", return_value=submission
+            ) as mock_submit,
+            patch("supercharge.contribute.mark_submitted") as mock_mark,
+            patch("supercharge.contribute.mark_rejected") as mock_reject,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
 
-        assert len(issues) == 1
-        assert issues[0]["title"] == "My Pattern"
-        assert issues[0]["url"] == "https://github.com/ac8ai/Supercharge-AI/issues/99"
-        assert issues[0]["action"] == "created"
+            assert result["approved"] == 1
+            assert result["rejected"] == 1
+            assert result["skipped"] == 0
+            mock_submit.assert_called_once_with(candidates[0]["path"])
+            mock_mark.assert_called_once()
+            mock_reject.assert_called_once_with(candidates[1]["path"])
+
+    @pytest.mark.anyio
+    async def test_elicitation_raises_exception_skips_candidate(
+        self, _get_tool, tmp_path: Path
+    ):
+        """Elicitation raises exception -> candidate is skipped gracefully."""
+        tool = _get_tool
+        candidate = _make_candidate(tmp_path, title="Error Pattern")
+        ctx = _make_ctx(side_effect=RuntimeError("elicitation failed"))
+
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=[candidate]),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
+            patch("supercharge.contribute.submit_contribution") as mock_submit,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
+
+            assert result["skipped"] == 1
+            assert result["approved"] == 0
+            mock_submit.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_submit_raises_exception_skips_that_candidate(
+        self, _get_tool, tmp_path: Path
+    ):
+        """submit_contribution raises -> that candidate skipped, others continue."""
+        tool = _get_tool
+        candidates = [
+            _make_candidate(tmp_path, name="a.md", title="Failing Pattern"),
+            _make_candidate(tmp_path, name="b.md", title="Good Pattern"),
+        ]
+
+        # First: review_individually, then approve both
+        review_individually = _make_elicitation_result(
+            action="accept", data={"action": "review_individually"}
+        )
+        approve_result = _make_elicitation_result(
+            action="accept", data={"action": "approve"}
+        )
+        ctx = _make_ctx(
+            side_effect=[review_individually, approve_result, approve_result]
+        )
+
+        submission_ok = {
+            "action": "created",
+            "issue_url": "https://github.com/ac8ai/Supercharge-AI/issues/30",
+            "issue_number": 30,
+        }
+
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=candidates),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
+            patch(
+                "supercharge.contribute.submit_contribution",
+                side_effect=[RuntimeError("submit failed"), submission_ok],
+            ),
+            patch("supercharge.contribute.mark_submitted") as mock_mark,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
+
+            # First candidate fails submission -> skipped
+            # Second candidate succeeds -> approved
+            assert result["approved"] == 1
+            assert result["skipped"] == 1
+            mock_mark.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_user_declines_elicitation_treated_as_skip(
+        self, _get_tool, tmp_path: Path
+    ):
+        """result.action == 'decline' -> treated as skip."""
+        tool = _get_tool
+        candidate = _make_candidate(tmp_path, title="Declined Pattern")
+        decline_result = _make_elicitation_result(action="decline", data=None)
+        ctx = _make_ctx(return_value=decline_result)
+
+        with (
+            patch("supercharge.contribute.list_candidates", return_value=[candidate]),
+            patch("supercharge.paths._user_methodology_dir", return_value=tmp_path),
+            patch("supercharge.contribute.strip_context", return_value="stripped"),
+            patch("supercharge.contribute.submit_contribution") as mock_submit,
+            patch("supercharge.contribute.mark_rejected") as mock_reject,
+        ):
+            raw = await tool.run({}, context=ctx)
+            result = json.loads(raw)
+
+            assert result["skipped"] == 1
+            assert result["approved"] == 0
+            assert result["rejected"] == 0
+            mock_submit.assert_not_called()
+            mock_reject.assert_not_called()
 
 
-# ── Elicitation schema ────────────────────────────────────────────────────
+# ── Elicitation schema ───────────────────────────────────────────────────
 
 
 class TestElicitationSchema:
@@ -278,7 +456,7 @@ class TestElicitationSchema:
         }
 
 
-# ── CLI integration ──────────────────────────────────────────────────────
+# ── CLI integration ─────────────────────────────────────────────────────
 
 
 class TestMcpCliGroup:

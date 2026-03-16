@@ -22,9 +22,19 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "supercharge hook-subagent-stop"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|Task",
+        "matcher": "Bash|Write|Edit|Task|WebSearch|WebFetch",
         "hooks": [
           {
             "type": "command",
