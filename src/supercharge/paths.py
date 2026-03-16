@@ -89,6 +89,16 @@ def _cli_data_dir() -> Path:
     return pkg_data
 
 
+def _user_methodology_dir() -> Path:
+    """Return user-level methodology memory dir: ~/.claude/SuperchargeAI/memory/methodology/."""
+    return Path.home() / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+
+
+def _project_memory_dir(project_dir: str) -> Path:
+    """Return project-level memory dir: <project>/.claude/SuperchargeAI/memory/."""
+    return Path(project_dir) / ".claude" / "SuperchargeAI" / "memory"
+
+
 def _project_dir() -> str:
     """Resolve the project root directory.
 

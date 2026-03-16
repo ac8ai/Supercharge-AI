@@ -93,6 +93,27 @@ Handle directly without delegating when:
 - User explicitly opts out of delegation ("do this directly", "don't delegate",
   "handle this yourself", "brainstorm with me")
 </exceptions>
+
+<contribution-review>
+The SessionStart hook may inject a nudge about pending methodology memory contributions
+into additionalContext. When you see this nudge:
+
+- Surface it to the user at an appropriate moment (not necessarily immediately — if they
+  open with an urgent request, handle that first)
+- The user can respond with "review contributions", "accept all contributions", or ignore it
+
+**If the user says "review contributions":**
+1. Call the MCP `review_contributions` tool if available — it presents an elicitation form
+2. If MCP is not available, fall back to: run `supercharge contribute list --json` via Bash,
+   present each candidate to the user in conversation, collect approve/reject/skip responses,
+   then run `supercharge contribute review --accept-all` or individual submissions as appropriate
+
+**If the user says "accept all":**
+- Run `supercharge contribute review --accept-all` via Bash
+- Report the results (issue URLs)
+
+**If the user ignores the nudge:** Do nothing. Do not re-mention it in the same session.
+</contribution-review>
 </workflows>
 
 <delegating>

@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 from supercharge.memory import (
     _STAMP_TYPE,
+    _format_stale_folders_task,
     _format_transcript_task,
+    _migrate_methodology_memory,
     _newest_mtime,
     _scan_stale_task_folders,
     _scan_unreviewed_transcripts,
@@ -18,6 +20,7 @@ from supercharge.memory import (
     _stamp_status,
     _stamp_transcript,
 )
+from supercharge.paths import _project_memory_dir, _user_methodology_dir
 
 # ── _scan_unreviewed_transcripts ──────────────────────────────────────────
 
@@ -268,7 +271,7 @@ class TestFormatTranscriptTask:
         ]
         with patch("supercharge.memory._load_template") as mock_tpl:
             mock_tpl.return_value = "Files:\n{transcript_list}\n\nMemory: {memory_dir}"
-            result = _format_transcript_task(transcripts, "/mem")
+            result = _format_transcript_task(transcripts, "/mem", "/meth")
         assert "- `/tmp/a.jsonl`" in result
         assert "- `/tmp/b.jsonl`" in result
         assert "start reading from line" not in result
@@ -280,7 +283,7 @@ class TestFormatTranscriptTask:
         ]
         with patch("supercharge.memory._load_template") as mock_tpl:
             mock_tpl.return_value = "Files:\n{transcript_list}\n\nMemory: {memory_dir}"
-            result = _format_transcript_task(transcripts, "/mem")
+            result = _format_transcript_task(transcripts, "/mem", "/meth")
         assert (
             "- `/tmp/a.jsonl` (start reading from line 42"
             " -- skip previously reviewed content)" in result
@@ -297,7 +300,7 @@ class TestFormatTranscriptTask:
         ]
         with patch("supercharge.memory._load_template") as mock_tpl:
             mock_tpl.return_value = "Files:\n{transcript_list}\n\nMemory: {memory_dir}"
-            result = _format_transcript_task(transcripts, "/mem")
+            result = _format_transcript_task(transcripts, "/mem", "/meth")
         assert "- `/tmp/a.jsonl`\n" in result
         assert (
             "- `/tmp/b.jsonl` (start reading from line 5"
@@ -609,3 +612,138 @@ class TestSpawnBackgroundMemory:
 
         task_md = task_dir / "task.md"
         assert task_md.read_text() == "# Custom task content"
+
+
+# ── _user_methodology_dir / _project_memory_dir ───────────────────────────
+
+
+class TestUserMethodologyDir:
+    def test_returns_path_under_home(self):
+        result = _user_methodology_dir()
+        assert result == Path.home() / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+
+    def test_returns_path_type(self):
+        result = _user_methodology_dir()
+        assert isinstance(result, Path)
+
+
+class TestProjectMemoryDir:
+    def test_returns_correct_path(self):
+        result = _project_memory_dir("/my/project")
+        assert result == Path("/my/project/.claude/SuperchargeAI/memory")
+
+    def test_returns_path_type(self):
+        result = _project_memory_dir("/any")
+        assert isinstance(result, Path)
+
+
+# ── _format_transcript_task / _format_stale_folders_task with methodology_dir
+
+
+class TestFormatWithMethodologyDir:
+    def test_transcript_task_includes_methodology_dir(self):
+        transcripts = [(Path("/tmp/a.jsonl"), None)]
+        with patch("supercharge.memory._load_template") as mock_tpl:
+            mock_tpl.return_value = (
+                "Project: {memory_dir} Methodology: {methodology_dir} Files: {transcript_list}"
+            )
+            result = _format_transcript_task(transcripts, "/proj/mem", "/user/meth")
+        assert "/proj/mem" in result
+        assert "/user/meth" in result
+
+    def test_stale_task_includes_methodology_dir(self):
+        folders = [Path("/tmp/stale")]
+        with patch("supercharge.memory._load_template") as mock_tpl:
+            mock_tpl.return_value = (
+                "Project: {memory_dir} Methodology: {methodology_dir} Folders: {folder_list}"
+            )
+            result = _format_stale_folders_task(folders, "/proj/mem", "/user/meth")
+        assert "/proj/mem" in result
+        assert "/user/meth" in result
+
+
+# ── _migrate_methodology_memory ───────────────────────────────────────────
+
+
+class TestMigrateMethodologyMemory:
+    def test_noop_when_no_local_dir(self, tmp_path: Path):
+        # No methodology dir exists -- should silently return
+        _migrate_methodology_memory(str(tmp_path))
+        # No crash, no side effects
+
+    def test_removes_empty_dir(self, tmp_path: Path):
+        local_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        local_dir.mkdir(parents=True)
+        _migrate_methodology_memory(str(tmp_path))
+        assert not local_dir.exists()
+
+    def test_copies_new_files(self, tmp_path: Path):
+        local_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        local_dir.mkdir(parents=True)
+        (local_dir / "learning.md").write_text("# Content\nSome learning")
+
+        fake_home = tmp_path / "fakehome"
+        user_dir = fake_home / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+
+        with patch("supercharge.paths._user_methodology_dir", return_value=user_dir):
+            _migrate_methodology_memory(str(tmp_path))
+
+        assert (user_dir / "learning.md").exists()
+        assert (user_dir / "learning.md").read_text() == "# Content\nSome learning"
+        assert not local_dir.exists()  # cleaned up
+
+    def test_detects_conflicts_and_spawns_agent(self, tmp_path: Path):
+        local_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        local_dir.mkdir(parents=True)
+        (local_dir / "shared.md").write_text("# Local version")
+
+        fake_home = tmp_path / "fakehome"
+        user_dir = fake_home / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        user_dir.mkdir(parents=True)
+        (user_dir / "shared.md").write_text("# User version")
+
+        with patch("supercharge.paths._user_methodology_dir", return_value=user_dir):
+            with patch("supercharge.memory._spawn_background_memory") as mock_spawn:
+                mock_spawn.return_value = "fake-uuid"
+                _migrate_methodology_memory(str(tmp_path))
+
+        # Should have spawned a consolidation agent
+        mock_spawn.assert_called_once()
+        task_content = mock_spawn.call_args[0][0]
+        assert "shared.md" in task_content
+        assert "Consolidate" in task_content
+        # Local dir should NOT be deleted (agent needs source files)
+        assert local_dir.exists()
+
+    def test_copies_unique_and_flags_conflicts(self, tmp_path: Path):
+        local_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        local_dir.mkdir(parents=True)
+        (local_dir / "unique.md").write_text("# Unique")
+        (local_dir / "conflict.md").write_text("# Local conflict")
+
+        fake_home = tmp_path / "fakehome"
+        user_dir = fake_home / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        user_dir.mkdir(parents=True)
+        (user_dir / "conflict.md").write_text("# User conflict")
+
+        with patch("supercharge.paths._user_methodology_dir", return_value=user_dir):
+            with patch("supercharge.memory._spawn_background_memory") as mock_spawn:
+                mock_spawn.return_value = "fake-uuid"
+                _migrate_methodology_memory(str(tmp_path))
+
+        # Unique file should be copied
+        assert (user_dir / "unique.md").exists()
+        assert (user_dir / "unique.md").read_text() == "# Unique"
+        # Conflict file should NOT be overwritten
+        assert (user_dir / "conflict.md").read_text() == "# User conflict"
+        # Spawn should be called for conflict
+        mock_spawn.assert_called_once()
+
+    def test_exception_is_caught(self, tmp_path: Path):
+        local_dir = tmp_path / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+        local_dir.mkdir(parents=True)
+        (local_dir / "file.md").write_text("content")
+
+        with patch("supercharge.paths._user_methodology_dir", side_effect=OSError("boom")):
+            # Should not raise
+            _migrate_methodology_memory(str(tmp_path))

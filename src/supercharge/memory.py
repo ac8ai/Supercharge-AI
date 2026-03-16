@@ -44,7 +44,9 @@ def _load_template(name: str) -> str:
     return path.read_text()
 
 
-def _format_transcript_task(transcripts: list[tuple[Path, int | None]], memory_dir: str) -> str:
+def _format_transcript_task(
+    transcripts: list[tuple[Path, int | None]], memory_dir: str, methodology_dir: str
+) -> str:
     """Format the transcript harvesting task.md from template."""
     lines = []
     for path, start_line in transcripts:
@@ -57,14 +59,18 @@ def _format_transcript_task(transcripts: list[tuple[Path, int | None]], memory_d
             lines.append(f"- `{path}`")
     transcript_list = "\n".join(lines)
     template = _load_template("memory-transcript-task.md")
-    return template.format(transcript_list=transcript_list, memory_dir=memory_dir)
+    return template.format(
+        transcript_list=transcript_list, memory_dir=memory_dir, methodology_dir=methodology_dir
+    )
 
 
-def _format_stale_folders_task(folders: list[Path], memory_dir: str) -> str:
+def _format_stale_folders_task(folders: list[Path], memory_dir: str, methodology_dir: str) -> str:
     """Format the stale folder harvesting task.md from template."""
     folder_list = "\n".join(f"- `{p}`" for p in folders)
     template = _load_template("memory-stale-task.md")
-    return template.format(folder_list=folder_list, memory_dir=memory_dir)
+    return template.format(
+        folder_list=folder_list, memory_dir=memory_dir, methodology_dir=methodology_dir
+    )
 
 
 # ── Scanning functions ─────────────────────────────────────────────────────
@@ -249,6 +255,91 @@ def _newest_mtime(folder: Path) -> float | None:
     except OSError:
         pass
     return newest
+
+
+# ── Methodology migration ────────────────────────────────────────────────
+
+_MIGRATION_CONSOLIDATE_TEMPLATE = '''# Task
+
+Consolidate duplicate methodology memory files. You are running in the background --
+there is no orchestrator to interact with.
+
+## Requirements
+
+1. For each pair of files listed below, read both versions
+2. Merge them into a single file at the DESTINATION path, combining all insights
+3. Follow the memory file format: YAML frontmatter + `# Content` + `# Notes`
+4. After merging, delete the SOURCE file
+
+## File Pairs
+
+{file_pairs}
+
+## Context
+
+You are a memory agent running autonomously in the background. Methodology memory
+is being migrated from project-scope to user-scope. These files existed in both
+locations and need consolidation.
+'''
+
+
+def _migrate_methodology_memory(project_dir: str) -> None:
+    """Migrate project-local methodology memory to user-scope.
+
+    Copies files that only exist locally. For conflicts (same filename in both
+    locations), spawns a background memory agent to consolidate.
+    Deletes the project-local methodology/ directory after migration.
+
+    Runs silently -- logs to stderr on error, never raises.
+    """
+    import shutil
+
+    from supercharge.paths import _user_methodology_dir
+
+    try:
+        local_dir = Path(project_dir) / '.claude' / 'SuperchargeAI' / 'memory' / 'methodology'
+        if not local_dir.is_dir():
+            return
+
+        local_files = [f for f in local_dir.iterdir() if f.is_file()]
+        if not local_files:
+            # Empty directory -- just remove it
+            shutil.rmtree(local_dir)
+            return
+
+        user_dir = _user_methodology_dir()
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        conflicts: list[tuple[Path, Path]] = []  # (source, dest)
+
+        for local_file in local_files:
+            dest = user_dir / local_file.name
+            if dest.exists():
+                conflicts.append((local_file, dest))
+            else:
+                shutil.copy2(local_file, dest)
+
+        if conflicts:
+            # Spawn a memory agent to consolidate conflicting files
+            pairs = []
+            for src, dst in conflicts:
+                pairs.append(f'- SOURCE: `{src}`  DESTINATION: `{dst}`')
+            file_pairs = '\n'.join(pairs)
+            task_content = _MIGRATION_CONSOLIDATE_TEMPLATE.format(file_pairs=file_pairs)
+            uuid = _spawn_background_memory(task_content, project_dir)
+            if uuid:
+                print(
+                    f'[SuperchargeAI] Background memory: methodology migration'
+                    f' consolidation ({uuid})',
+                    file=sys.stderr,
+                )
+            # Don't delete local dir yet -- consolidation agent needs the source files
+            return
+
+        # No conflicts -- all files copied successfully, remove local dir
+        shutil.rmtree(local_dir)
+    except Exception as exc:
+        print(f'[SuperchargeAI] Methodology migration failed: {exc}', file=sys.stderr)
 
 
 # ── Background spawning ────────────────────────────────────────────────────

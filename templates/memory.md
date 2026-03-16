@@ -3,6 +3,7 @@ title: <Brief title>
 keywords: [keyword1, keyword2, keyword3]
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>
+contribution_candidate: <true|false, optional — set by memory agent for universal methodology memories>
 ---
 
 # Content

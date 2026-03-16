@@ -167,11 +167,12 @@ def _trigger_background_memory(input_data: dict) -> None:
     from supercharge.memory import (
         _format_stale_folders_task,
         _format_transcript_task,
+        _migrate_methodology_memory,
         _scan_stale_task_folders,
         _scan_unreviewed_transcripts,
         _spawn_background_memory,
     )
-    from supercharge.paths import _project_dir
+    from supercharge.paths import _project_dir, _user_methodology_dir
 
     try:
         transcript_path = input_data.get("transcript_path", "")
@@ -182,12 +183,16 @@ def _trigger_background_memory(input_data: dict) -> None:
             return
 
         memory_dir = str(Path(project_dir) / ".claude" / "SuperchargeAI" / "memory")
+        methodology_dir = str(_user_methodology_dir())
+
+        # Feature 0: Migrate methodology memory from project to user scope
+        _migrate_methodology_memory(project_dir)
 
         # Feature 1: Transcript harvesting
         if transcript_path:
             transcripts = _scan_unreviewed_transcripts(transcript_path)
             if transcripts:
-                task_content = _format_transcript_task(transcripts, memory_dir)
+                task_content = _format_transcript_task(transcripts, memory_dir, methodology_dir)
                 uuid = _spawn_background_memory(task_content, project_dir)
                 if uuid:
                     click.echo(
@@ -200,7 +205,7 @@ def _trigger_background_memory(input_data: dict) -> None:
         if task_root.is_dir():
             stale = _scan_stale_task_folders(task_root)
             if stale:
-                task_content = _format_stale_folders_task(stale, memory_dir)
+                task_content = _format_stale_folders_task(stale, memory_dir, methodology_dir)
                 uuid = _spawn_background_memory(task_content, project_dir)
                 if uuid:
                     click.echo(
@@ -250,6 +255,15 @@ def hook_session_start():
     if session_id:
         parts.append(f'\n<session-identity session_id="{session_id}" />')
 
+    # Contribution nudge (non-blocking)
+    try:
+        from supercharge.nudge import get_contribution_nudge
+        nudge = get_contribution_nudge(session_id)
+        if nudge:
+            parts.append(nudge)
+    except Exception:
+        pass
+
     content = "\n".join(p for p in parts if p)
 
     if content:
@@ -286,11 +300,42 @@ def hook_subagent_start():
     if content:
         _emit_hook("SubagentStart", content, hook_dir)
 
+    # Normalize agent_type: strip "supercharge-ai:" prefix for consistency
+    # with CLI-emitted events that use the short form (e.g., "code" not "supercharge-ai:code")
+    norm_type = agent_type
+    if norm_type.startswith("supercharge-ai:"):
+        norm_type = norm_type[len("supercharge-ai:"):]
+
     _emit(
         "subagent_start",
         session_id=session_id,
         agent_id=agent_id,
-        agent_type=agent_type,
+        agent_type=norm_type,
+        parent_id=f"orchestrator:{session_id}" if session_id else "",
+    )
+
+
+@click.command("hook-subagent-stop", hidden=True)
+def hook_subagent_stop():
+    """SubagentStop hook: record agent completion with duration."""
+    input_data = json.load(sys.stdin)
+    session_id = input_data.get("session_id", "")
+    agent_id = input_data.get("agent_id", "")
+    agent_type = input_data.get("agent_type", "")
+
+    norm_type = agent_type
+    if norm_type.startswith("supercharge-ai:"):
+        norm_type = norm_type[len("supercharge-ai:"):]
+
+    transcript_path = input_data.get("agent_transcript_path", "")
+
+    _emit(
+        "subagent_stop",
+        session_id=session_id,
+        agent_id=agent_id,
+        agent_type=norm_type,
+        parent_id=f"orchestrator:{session_id}" if session_id else "",
+        detail=transcript_path,
     )
 
 

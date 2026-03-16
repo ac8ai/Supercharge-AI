@@ -20,6 +20,12 @@ dependencies = ["click>=8.3", "claude-agent-sdk>=0.1"]
 supercharge = "supercharge.cli:supercharge"
 
 [project.optional-dependencies]
+dashboard = [
+    "starlette>=0.50",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.0",
+]
+mcp = ["mcp>=1.0"]
 dev = [
     "ruff>=0.8.0",
     "pytest>=8.0.0",
@@ -40,10 +46,16 @@ packages = ["src/supercharge"]
 [tool.hatch.build.targets.wheel.force-include]
 "prompts" = "supercharge/data/prompts"
 "templates" = "supercharge/data/templates"
+"src/supercharge/data/dashboard" = "supercharge/data/dashboard"
 
 [tool.uv]
 # .venv location controlled by UV_PROJECT_ENVIRONMENT at runtime
 # to place it in <project_root>/.claude/.venv
+
+[tool.pytest.ini_options]
+markers = [
+    "no_isolate_metrics: opt out of the autouse _isolate_metrics_db fixture",
+]
 
 [tool.ruff]
 line-length = 100

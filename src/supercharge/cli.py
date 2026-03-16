@@ -7,13 +7,19 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import click
 
-from supercharge.hooks import hook_pre_tool_use, hook_session_start, hook_subagent_start
+from supercharge.hooks import (
+    hook_pre_tool_use,
+    hook_session_start,
+    hook_subagent_start,
+    hook_subagent_stop,
+)
 from supercharge.metrics import _emit
 from supercharge.paths import (
     AmbiguousPrefixError,
@@ -63,6 +69,7 @@ def version_cmd():
 
 supercharge.add_command(hook_session_start)
 supercharge.add_command(hook_subagent_start)
+supercharge.add_command(hook_subagent_stop)
 supercharge.add_command(hook_pre_tool_use)
 
 # ── init / deinit ────────────────────────────────────────────────────────────
@@ -164,14 +171,17 @@ def permissions_remove():
 
 # ── slug generation ──────────────────────────────────────────────────────────
 
-def _name_to_slug(name: str) -> str:
+def _name_to_slug(name: str | None) -> str:
     """Convert a human-readable task name to a kebab-case slug.
 
     ``"Implement Auth Middleware"`` -> ``"implement-auth-middleware"``
 
     Strips non-alphanumeric chars (except spaces/hyphens), lowercases,
     replaces spaces with hyphens, and collapses multiple hyphens.
+    Returns empty string if name is None or empty.
     """
+    if not name:
+        return ""
     # Strip non-alphanumeric except spaces and hyphens
     slug = re.sub(r"[^a-zA-Z0-9 \-]", "", name)
     slug = slug.lower().strip()
@@ -251,7 +261,7 @@ def task():
     help="Author: orchestrator:<session_id>, task:<uuid>, or worker:<id>",
 )
 @click.option(
-    "--name", required=True,
+    "--name", required=False, default=None,
     help="Human-readable task name (e.g. 'Implement Auth Middleware').",
 )
 @click.option(
@@ -297,8 +307,9 @@ def task_init(agent_type: str, author: str | None, name: str, print_full: bool):
     task_md = task_dir / "task.md"
     frontmatter_fields = [
         f"task_uuid: {task_id}",
-        f"task_name: {name}",
     ]
+    if name:
+        frontmatter_fields.append(f"task_name: {name}")
     frontmatter_fields.extend([
         f"agent_type: {agent_type}",
         f"created_at: {datetime.now(timezone.utc).isoformat()}",
@@ -308,9 +319,9 @@ def task_init(agent_type: str, author: str | None, name: str, print_full: bool):
         frontmatter_fields.append(f"created_by: {author}")
     frontmatter = "---\n" + "\n".join(frontmatter_fields) + "\n---\n\n"
 
-    # Build content: name header + original template
+    # Build content: optional name header + original template
     original = task_md.read_text()
-    header = f"# {name}\n\n"
+    header = f"# {name}\n\n" if name else ""
     task_md.write_text(frontmatter + header + original)
 
     _emit(
@@ -704,6 +715,30 @@ def memory_stamp(transcript_path: str):
     click.echo(f"Stamped {transcript_path}")
 
 
+# ── mcp ───────────────────────────────────────────────────────────────────
+
+
+@supercharge.group()
+def mcp():
+    """MCP server commands."""
+
+
+@mcp.command()
+def serve():
+    """Start the MCP server (stdio transport)."""
+    from supercharge.mcp_server import _check_mcp_available
+
+    if not _check_mcp_available():
+        raise click.ClickException(
+            "MCP support requires the mcp package. "
+            "Install with: uv pip install 'supercharge-ai[mcp]'"
+        )
+
+    from supercharge.mcp_server import run_server
+
+    run_server()
+
+
 # ── dashboard ────────────────────────────────────────────────────────────────
 
 
@@ -716,3 +751,132 @@ def dashboard(port, host, open_browser):
     from supercharge.dashboard import _run_server
 
     _run_server(host=host, port=port, open_browser=open_browser)
+
+
+# ── contribute ────────────────────────────────────────────────────────────
+
+
+@supercharge.group()
+def contribute():
+    """List, review, and submit methodology memory contributions."""
+
+
+@contribute.command("list")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON array")
+def contribute_list(as_json: bool):
+    """List methodology memories marked as contribution candidates."""
+    from supercharge.contribute import list_candidates
+    from supercharge.paths import _user_methodology_dir
+
+    methodology_dir = _user_methodology_dir()
+    candidates = list_candidates(methodology_dir)
+
+    if not candidates:
+        click.echo("No contribution candidates found.")
+        return
+
+    if as_json:
+        # Serialize Path objects to strings for JSON output
+        output = []
+        for c in candidates:
+            output.append({
+                "title": c["title"],
+                "keywords": c["keywords"],
+                "category": c["category"],
+                "path": str(c["path"]),
+            })
+        click.echo(json.dumps(output, indent=2))
+    else:
+        # Human-readable table
+        click.echo(f"{'Title':<30} {'Category':<12} {'Keywords':<30} {'Path'}")
+        click.echo("-" * 100)
+        for c in candidates:
+            title = c["title"][:28]
+            category = c["category"][:10]
+            keywords = ", ".join(c["keywords"])[:28]
+            path = str(c["path"])
+            click.echo(f"{title:<30} {category:<12} {keywords:<30} {path}")
+
+
+@contribute.command("review")
+@click.option(
+    "--accept-all", is_flag=True, default=False, help="Approve all candidates without prompting"
+)
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Show what would be submitted without submitting"
+)
+def contribute_review(accept_all: bool, dry_run: bool):
+    """Interactively review and submit contribution candidates."""
+    from supercharge.contribute import (
+        check_gh_available,
+        list_candidates,
+        mark_rejected,
+        mark_submitted,
+        strip_context,
+        submit_contribution,
+    )
+    from supercharge.nudge import clear_nudge_lock
+    from supercharge.paths import _user_methodology_dir
+
+    # Prerequisite check: gh must be available for submission
+    if not dry_run:
+        available, err_msg = check_gh_available()
+        if not available:
+            click.echo(f"Error: {err_msg}", err=True)
+            raise SystemExit(1)
+
+    methodology_dir = _user_methodology_dir()
+    candidates = list_candidates(methodology_dir)
+
+    if not candidates:
+        click.echo("No contribution candidates found.")
+        return
+
+    approved = 0
+    rejected = 0
+    skipped = 0
+
+    for c in candidates:
+        click.echo(f"\n--- {c['title']} ---")
+        click.echo(f"Category: {c['category']}")
+        click.echo(f"Keywords: {', '.join(c['keywords'])}")
+        click.echo(f"Path: {c['path']}")
+        click.echo()
+        click.echo(strip_context(c["content"]))
+        click.echo()
+
+        if accept_all:
+            choice = "y"
+        else:
+            choice = click.prompt(
+                "Approve this contribution? [y/n/s] (y=approve, n=reject, s=skip)",
+                type=click.Choice(["y", "n", "s"], case_sensitive=False),
+                default="s",
+            )
+
+        if choice == "y":
+            if dry_run:
+                click.echo(f"[dry-run] Would submit: {c['title']}")
+            else:
+                try:
+                    result = submit_contribution(c["path"])
+                    mark_submitted(c["path"], result["issue_url"])
+                    click.echo(f"Submitted: {result['issue_url']}")
+                except subprocess.CalledProcessError as e:
+                    click.echo(f"Failed to submit {c['title']}: {e}. Skipping.", err=True)
+                    skipped += 1
+                    continue
+            approved += 1
+        elif choice == "n":
+            if not dry_run:
+                mark_rejected(c["path"])
+            click.echo(f"Rejected: {c['title']}")
+            rejected += 1
+        else:
+            skipped += 1
+
+    click.echo(f"\nApproved {approved}, rejected {rejected}, skipped {skipped}")
+
+    # Clear nudge lock if any approvals or rejections were made
+    if (approved > 0 or rejected > 0) and not dry_run:
+        clear_nudge_lock()
