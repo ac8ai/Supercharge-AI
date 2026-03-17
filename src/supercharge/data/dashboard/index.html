@@ -1,0 +1,3835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SuperchargeAI Dashboard</title>
+  <script src="/static/cytoscape.min.js"></script>
+  <script src="/static/dagre.min.js"></script>
+  <script src="/static/cytoscape-dagre.js"></script>
+  <script src="/static/d3.min.js"></script>
+  <script src="/static/marked.min.js"></script>
+  <style>
+    :root {
+      --bg: #1a1b1e;
+      --bg-card: #25262b;
+      --bg-hover: #2c2e33;
+      --bg-input: #1a1b1e;
+      --border: #373a40;
+      --text: #c1c2c5;
+      --text-dim: #909296;
+      --text-bright: #e9ecef;
+      --accent: #7950f2;
+      --accent-dim: #5f3dc4;
+
+      --plan: #4dabf7;
+      --code: #51cf66;
+      --review: #ff922b;
+      --memory: #cc5de8;
+      --research: #20c997;
+      --document: #868e96;
+      --consistency: #f06595;
+
+      --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+      --radius: 6px;
+      --transition: 150ms ease;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { font-size: 13px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* -- Header -- */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-bright);
+      font-family: var(--mono);
+      letter-spacing: -0.3px;
+    }
+    .header h1 span { color: var(--accent); }
+
+    /* -- Tabs -- */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      margin-left: auto;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+    }
+    .tab-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .tab-btn.active { background: var(--accent-dim); color: #fff; }
+
+    /* -- Main -- */
+    .main { padding: 16px 20px; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* -- Controls bar -- */
+    .controls {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .ctrl-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+    }
+    .ctrl-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .controls .status {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+    }
+    .controls .status .dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--code);
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    /* -- Session cards -- */
+    .session-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .session-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color var(--transition);
+    }
+    .session-card:hover { border-color: var(--accent-dim); }
+
+    .session-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      padding: 10px 14px;
+      cursor: pointer;
+      gap: 12px;
+      user-select: none;
+    }
+    .session-head:hover { background: var(--bg-hover); }
+
+    .session-id {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-bright);
+      font-weight: 600;
+    }
+    .session-time {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    .session-stats {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .stat {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .stat b {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .session-flow {
+      display: flex;
+      gap: 3px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .flow-pill {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-size: 9px;
+      font-weight: 600;
+      color: #fff;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .flow-arrow {
+      color: var(--text-dim);
+      font-size: 9px;
+    }
+
+    .session-body {
+      display: none;
+      border-top: 1px solid var(--border);
+      padding: 0;
+      background: var(--bg);
+      position: relative;
+    }
+    .session-card.expanded .session-body { display: block; }
+
+    .session-body-inner {
+      padding: 12px 14px;
+    }
+
+    .tree-loading {
+      font-size: 12px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      padding: 12px 14px;
+    }
+
+    /* -- View toggle -- */
+    .view-toggle {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 10px;
+    }
+    .view-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+    }
+    .view-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .view-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* -- Graph container -- */
+    .graph-container {
+      width: 100%;
+      min-height: 350px;
+      height: 400px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      position: relative;
+    }
+
+    /* -- Detail panel (slide-in) -- */
+    .detail-panel {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 320px;
+      max-width: 100%;
+      height: 100%;
+      background: var(--bg-card);
+      border-left: 1px solid var(--border);
+      z-index: 10;
+      overflow-y: auto;
+      padding: 14px;
+      display: none;
+      box-shadow: -4px 0 12px rgba(0,0,0,0.3);
+    }
+    .detail-panel.open { display: block; }
+    .detail-panel-close {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-size: 16px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px;
+    }
+    .detail-panel-close:hover { color: var(--text-bright); }
+    .detail-panel h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 10px;
+      padding-right: 24px;
+    }
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--bg);
+    }
+    .detail-row .dl { color: var(--text-dim); }
+    .detail-row .dv { color: var(--text-bright); font-family: var(--mono); }
+
+    /* -- Tool breakdown bar -- */
+    .tool-bar-container {
+      margin: 10px 0;
+    }
+    .tool-stacked-bar {
+      display: flex;
+      height: 20px;
+      border-radius: 3px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .tool-stacked-segment {
+      height: 100%;
+      min-width: 2px;
+      transition: width 300ms ease;
+    }
+    .tool-table {
+      width: 100%;
+      margin-top: 8px;
+      border-collapse: collapse;
+    }
+    .tool-table th {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      text-align: left;
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tool-table td {
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 6px;
+      border-bottom: 1px solid var(--bg);
+    }
+    .tool-table .tool-color-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    /* -- Waterfall/Gantt -- */
+    .waterfall-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      overflow-x: auto;
+    }
+    .waterfall-row {
+      display: flex;
+      align-items: center;
+      height: 28px;
+      margin-bottom: 2px;
+    }
+    .waterfall-label {
+      min-width: 120px;
+      max-width: 160px;
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding-right: 8px;
+      flex-shrink: 0;
+    }
+    .waterfall-label.indent-1 { padding-left: 16px; }
+    .waterfall-label.indent-2 { padding-left: 32px; }
+    .waterfall-label.indent-3 { padding-left: 48px; }
+    .waterfall-track {
+      flex: 1;
+      height: 20px;
+      background: var(--bg);
+      border-radius: 3px;
+      position: relative;
+      min-width: 200px;
+    }
+    .waterfall-bar {
+      position: absolute;
+      height: 100%;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      padding: 0 6px;
+      font-size: 9px;
+      font-family: var(--mono);
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 4px;
+    }
+
+    /* -- Trace timeline (D3) -- */
+    .trace-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      overflow-x: auto;
+      min-height: 200px;
+    }
+    .trace-container svg {
+      display: block;
+    }
+    .trace-container .span-bar {
+      rx: 3;
+      ry: 3;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .trace-container .span-bar:hover {
+      opacity: 0.85;
+    }
+    .trace-container .span-bar.resume {
+      stroke-dasharray: 6 3;
+      stroke-width: 1.5;
+      stroke: rgba(255,255,255,0.4);
+    }
+    .trace-container .span-label {
+      font-family: var(--mono);
+      font-size: 11px;
+      fill: #fff;
+      dominant-baseline: middle;
+      pointer-events: none;
+    }
+    .trace-container .span-duration {
+      font-family: var(--mono);
+      font-size: 9px;
+      fill: var(--text-dim);
+      dominant-baseline: middle;
+      pointer-events: none;
+    }
+    .trace-container .arrow-line {
+      stroke: rgba(255,255,255,0.2);
+      stroke-width: 1;
+      fill: none;
+    }
+    .trace-container .axis-line {
+      stroke: var(--border);
+      stroke-width: 1;
+    }
+    .trace-container .axis-text {
+      font-family: var(--mono);
+      font-size: 9px;
+      fill: var(--text-dim);
+    }
+    .trace-container .row-label {
+      font-family: var(--mono);
+      font-size: 11px;
+      fill: var(--text);
+      dominant-baseline: middle;
+    }
+    .trace-tooltip {
+      position: absolute;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--text);
+      pointer-events: none;
+      z-index: 100;
+      white-space: pre-line;
+    }
+
+    /* -- Tree nodes (improved) -- */
+    .tree details {
+      margin-left: 16px;
+    }
+    .tree > details { margin-left: 0; }
+
+    .tree summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 4px 8px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-family: var(--mono);
+      transition: background var(--transition);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tree summary::-webkit-details-marker { display: none; }
+    .tree summary::before {
+      content: '\25B6';
+      font-size: 8px;
+      color: var(--text-dim);
+      transition: transform var(--transition);
+      display: inline-block;
+      width: 12px;
+      flex-shrink: 0;
+    }
+    .tree details[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    .tree summary:hover { background: var(--bg-hover); }
+
+    .tree .node-icon {
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .tree .node-label {
+      color: var(--text-bright);
+      font-weight: 500;
+    }
+    .tree .node-meta {
+      color: var(--text-dim);
+      font-size: 11px;
+      margin-left: auto;
+    }
+    .tree .node-tools-inline {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-left: 6px;
+    }
+
+    .tree .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      color: #fff;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    /* -- Badge colors -- */
+    .badge-plan { background: var(--plan); }
+    .badge-code { background: var(--code); color: #1a1b1e; }
+    .badge-review { background: var(--review); color: #1a1b1e; }
+    .badge-memory { background: var(--memory); }
+    .badge-research { background: var(--research); color: #1a1b1e; }
+    .badge-document { background: var(--document); }
+    .badge-consistency { background: var(--consistency); }
+    .badge-session { background: var(--accent); }
+    .badge-worker { background: #495057; }
+
+    .dot-plan { background: var(--plan); }
+    .dot-code { background: var(--code); }
+    .dot-review { background: var(--review); }
+    .dot-memory { background: var(--memory); }
+    .dot-research { background: var(--research); }
+    .dot-document { background: var(--document); }
+    .dot-consistency { background: var(--consistency); }
+
+    /* -- Stats tab -- */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      text-align: center;
+    }
+    .stat-card .value {
+      font-family: var(--mono);
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+    .stat-card .label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-top: 2px;
+    }
+
+    .stats-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .stats-section h3 {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-bright);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+
+    /* -- Bar chart (CSS) -- */
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .bar-label {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      min-width: 90px;
+      text-align: right;
+    }
+    .bar-track {
+      flex: 1;
+      height: 18px;
+      background: var(--bg);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 400ms ease;
+      min-width: 2px;
+    }
+    .bar-count {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      min-width: 40px;
+    }
+
+    /* -- Path frequencies -- */
+    .path-list { list-style: none; }
+    .path-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      font-family: var(--mono);
+      font-size: 11px;
+      border-bottom: 1px solid var(--bg);
+    }
+    .path-flow {
+      flex: 1;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .path-flow .arrow { color: var(--text-dim); }
+    .path-count {
+      color: var(--text-dim);
+      min-width: 30px;
+      text-align: right;
+    }
+
+    /* -- Timeline -- */
+    .timeline-chart {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 120px;
+      padding-top: 8px;
+    }
+    .timeline-bar-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100%;
+      justify-content: flex-end;
+    }
+    .timeline-bar {
+      width: 100%;
+      max-width: 40px;
+      background: var(--accent);
+      border-radius: 2px 2px 0 0;
+      transition: height 400ms ease;
+      min-height: 2px;
+    }
+    .timeline-label {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-dim);
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 60px;
+      text-align: center;
+    }
+    .timeline-count {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-dim);
+      margin-bottom: 2px;
+    }
+
+    /* -- Averages -- */
+    .avg-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+    }
+    .avg-item {
+      text-align: center;
+      padding: 8px;
+    }
+    .avg-item .value {
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+    .avg-item .label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    /* -- Tool usage stats section -- */
+    .tool-usage-bar {
+      display: flex;
+      height: 28px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--bg);
+      margin-bottom: 12px;
+    }
+    .tool-usage-segment {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-family: var(--mono);
+      color: #fff;
+      min-width: 2px;
+      overflow: hidden;
+      white-space: nowrap;
+      transition: width 400ms ease;
+    }
+    .tool-stats-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .tool-stats-table th {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      text-align: left;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tool-stats-table th:last-child,
+    .tool-stats-table td:last-child { text-align: right; }
+    .tool-stats-table td {
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 4px 8px;
+      border-bottom: 1px solid var(--bg);
+      color: var(--text);
+    }
+
+    /* -- Browse tab -- */
+    .browse-tree details {
+      margin-left: 16px;
+    }
+    .browse-tree > details { margin-left: 0; }
+
+    .browse-tree summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 3px 6px;
+      border-radius: var(--radius);
+      font-family: var(--mono);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background var(--transition);
+    }
+    .browse-tree summary::-webkit-details-marker { display: none; }
+    .browse-tree summary::before {
+      content: '\25B6';
+      font-size: 8px;
+      color: var(--text-dim);
+      transition: transform var(--transition);
+      display: inline-block;
+      width: 12px;
+      flex-shrink: 0;
+    }
+    .browse-tree details[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    .browse-tree summary:hover { background: var(--bg-hover); }
+
+    .browse-tree .file-entry {
+      padding: 3px 6px 3px 24px;
+      font-family: var(--mono);
+      font-size: 12px;
+      display: flex;
+      gap: 8px;
+    }
+    .browse-tree .file-name { color: var(--text); }
+    .browse-tree .file-meta { color: var(--text-dim); font-size: 11px; }
+    .browse-tree .dir-icon { color: var(--plan); }
+    .browse-tree .file-icon { color: var(--text-dim); }
+
+    .browse-tree .task-badge {
+      display: inline-block;
+      padding: 0 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      color: #fff;
+      margin-left: 4px;
+    }
+
+    /* -- Session name + rename -- */
+    .session-name {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-bright);
+      font-weight: 600;
+      cursor: text;
+      padding: 1px 2px;
+      border-radius: 3px;
+      border: 1px solid transparent;
+      transition: border-color var(--transition), background var(--transition);
+    }
+    .session-name:hover { border-color: var(--border); background: var(--bg-input); }
+    .session-name-input {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-bright);
+      font-weight: 600;
+      background: var(--bg-input);
+      border: 1px solid var(--accent);
+      border-radius: 3px;
+      padding: 1px 4px;
+      outline: none;
+      width: 300px;
+      max-width: 100%;
+    }
+    .token-badges {
+      display: flex;
+      gap: 6px;
+      margin-top: 3px;
+      flex-wrap: wrap;
+    }
+    .token-badge {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      background: var(--bg);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+    .token-badge b { color: var(--text); font-weight: 600; }
+
+    /* -- Agent detail expand panel (stats tab) -- */
+    .agent-detail-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin: 4px 0 8px 0;
+      animation: slideDown 200ms ease;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; max-height: 0; }
+      to { opacity: 1; max-height: 500px; }
+    }
+    .agent-detail-panel h4 {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 8px;
+    }
+    .agent-detail-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      padding: 2px 0;
+    }
+    .agent-detail-row .dl { color: var(--text-dim); }
+    .agent-detail-row .dv { color: var(--text-bright); font-family: var(--mono); }
+    .bar-row { cursor: pointer; }
+    .bar-row:hover .bar-label { color: var(--text-bright); }
+
+    /* -- Toggle button for stats -- */
+    .stats-toggle {
+      display: inline-flex;
+      gap: 2px;
+      margin-bottom: 10px;
+    }
+    .stats-toggle-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+    }
+    .stats-toggle-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .stats-toggle-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* -- Per-agent tool heatmap -- */
+    .agent-tool-grid {
+      display: grid;
+      gap: 2px;
+      margin-top: 12px;
+    }
+    .agent-tool-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .agent-tool-row-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text);
+      min-width: 80px;
+      text-align: right;
+    }
+    .agent-tool-row-bar {
+      flex: 1;
+      display: flex;
+      height: 18px;
+      border-radius: 3px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .agent-tool-row-segment {
+      height: 100%;
+      min-width: 1px;
+      transition: width 400ms ease;
+    }
+
+    /* -- Task content overlay -- */
+    .task-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .task-overlay-inner {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 90%;
+      max-width: 800px;
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 20px;
+      position: relative;
+    }
+    .task-overlay-close {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-size: 20px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px;
+    }
+    .task-overlay-close:hover { color: var(--text-bright); }
+    .task-overlay-tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 12px;
+    }
+    .task-overlay-tab {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 4px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+    }
+    .task-overlay-tab:hover { background: var(--bg-hover); color: var(--text); }
+    .task-overlay-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .task-overlay-content {
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.6;
+      background: var(--bg);
+      border-radius: var(--radius);
+      padding: 14px;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    .task-overlay-content h1, .task-overlay-content h2, .task-overlay-content h3 {
+      color: var(--text-bright);
+      margin-top: 16px;
+      margin-bottom: 8px;
+    }
+    .task-overlay-content h1 { font-size: 18px; }
+    .task-overlay-content h2 { font-size: 15px; }
+    .task-overlay-content h3 { font-size: 13px; }
+    .task-overlay-content pre {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .task-overlay-content code {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--bg-card);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .task-overlay-content pre code {
+      background: none;
+      padding: 0;
+    }
+    .task-overlay-content ul, .task-overlay-content ol {
+      padding-left: 20px;
+    }
+    .task-overlay-content a {
+      color: var(--accent);
+    }
+    .detail-panel .view-task-btn {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 10px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-family: var(--sans);
+      font-size: 11px;
+      cursor: pointer;
+      transition: background var(--transition);
+    }
+    .detail-panel .view-task-btn:hover { background: var(--accent-dim); }
+
+    /* -- Supercharge highlight -- */
+    .supercharge-highlight {
+      background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+      color: #fff;
+      font-weight: 600;
+      border-radius: 3px;
+      padding: 0 4px;
+    }
+
+    /* -- Empty state -- */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    /* -- Global unit selector -- */
+    .unit-selector {
+      display: flex;
+      gap: 2px;
+    }
+    .unit-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 14px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition), border-color var(--transition);
+    }
+    .unit-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .unit-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* -- Decomposition bar view -- */
+    .decomp-container {
+      position: relative;
+    }
+    .decomp-breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .decomp-breadcrumb-item {
+      cursor: pointer;
+      color: var(--accent);
+      transition: color var(--transition);
+    }
+    .decomp-breadcrumb-item:hover { color: var(--text-bright); }
+    .decomp-breadcrumb-sep { color: var(--text-dim); }
+    .decomp-breadcrumb-current { color: var(--text-bright); font-weight: 600; }
+    .decomp-back-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+      margin-bottom: 10px;
+    }
+    .decomp-back-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .decomp-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .decomp-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      padding: 3px 0;
+      border-radius: var(--radius);
+      transition: background var(--transition);
+    }
+    .decomp-bar-row:hover { background: var(--bg-hover); }
+    .decomp-bar-label {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      width: 200px;
+      min-width: 200px;
+      max-width: 200px;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 0;
+    }
+    .decomp-children .decomp-bar-label {
+      width: 200px;
+      min-width: 200px;
+      max-width: 200px;
+    }
+    .decomp-view-btn {
+      cursor: pointer;
+      opacity: 0.5;
+      font-size: 12px;
+      transition: opacity var(--transition);
+    }
+    .decomp-view-btn:hover {
+      opacity: 1;
+    }
+    .decomp-children .decomp-children .decomp-bar-label {
+      width: 200px;
+      min-width: 200px;
+      max-width: 200px;
+    }
+    .decomp-bar-track {
+      flex: 1;
+      height: 28px;
+      background: var(--bg);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .decomp-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: width 400ms ease;
+      box-sizing: border-box;
+    }
+    .decomp-bar-value {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      min-width: 70px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .decomp-total-label {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+    .decomp-total-label b { color: var(--text-bright); font-weight: 600; }
+
+    /* -- Scrollbar -- */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>Supercharge</span>AI</h1>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="sessions">Sessions</button>
+      <button class="tab-btn" data-tab="stats">Statistics</button>
+      <button class="tab-btn" data-tab="browse">Browse</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- Sessions Tab -->
+    <div id="tab-sessions" class="tab-panel active">
+      <div class="controls">
+        <div class="unit-selector">
+          <button class="unit-btn active" data-unit="time" onclick="setGlobalUnit('time')">Time</button>
+          <button class="unit-btn" data-unit="tokens" onclick="setGlobalUnit('tokens')">Tokens</button>
+          <button class="unit-btn" data-unit="tools" onclick="setGlobalUnit('tools')">Tools</button>
+        </div>
+        <span style="margin-left:16px;border-left:2px solid var(--border);height:24px;display:inline-block;vertical-align:middle;margin-right:16px"></span>
+        <button class="ctrl-btn" id="ctrl-expand" onclick="expandAllSessions()">Expand All</button>
+        <button class="ctrl-btn" id="ctrl-collapse" onclick="collapseAllSessions()">Collapse All</button>
+        <span class="status"><span class="dot"></span>Auto-refresh 10s</span>
+      </div>
+      <div id="session-list" class="session-list">
+        <div class="empty-state">Loading sessions...</div>
+      </div>
+      <div id="decomp-view" class="decomp-container" style="display:none;">
+        <div class="empty-state">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Stats Tab -->
+    <div id="tab-stats" class="tab-panel">
+      <div id="stats-content">
+        <div class="empty-state">Loading statistics...</div>
+      </div>
+    </div>
+
+    <!-- Browse Tab -->
+    <div id="tab-browse" class="tab-panel">
+      <div id="browse-content">
+        <div class="empty-state">Loading file tree...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ===== Globals =====
+    const AGENT_COLORS = {
+      plan: 'plan', code: 'code', review: 'review',
+      memory: 'memory', research: 'research',
+      document: 'document', consistency: 'consistency'
+    };
+
+    // Hex colors for Cytoscape nodes (from task spec)
+    const AGENT_HEX = {
+      plan: '#6366f1',
+      code: '#22c55e',
+      review: '#f97316',
+      memory: '#a855f7',
+      research: '#14b8a6',
+      document: '#6b7280',
+      consistency: '#ec4899'
+    };
+
+    // Tool colors for breakdown charts
+    const TOOL_COLORS = {
+      Bash: '#14b8a6',
+      Read: '#4dabf7',
+      Write: '#ff922b',
+      Edit: '#51cf66',
+      Glob: '#cc5de8',
+      Grep: '#f06595',
+      WebSearch: '#22d3ee',
+      WebFetch: '#fbbf24',
+      Task: '#ef4444',
+      TodoRead: '#6366f1',
+      TodoWrite: '#818cf8',
+      Agent: '#a78bfa'
+    };
+
+    function getToolColor(name) {
+      return TOOL_COLORS[name] || '#6b7280';
+    }
+
+    let sessionsCache = [];
+    let treeCacheMap = {};
+    let cytoscapeInstances = {};
+    let activeViews = {};
+    let refreshTimer = null;
+
+    // ===== Tab switching =====
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+        btn.classList.add('active');
+        var panel = document.getElementById('tab-' + btn.dataset.tab);
+        panel.classList.add('active');
+
+        if (btn.dataset.tab === 'stats') loadStats();
+        if (btn.dataset.tab === 'browse') loadBrowse();
+      });
+    });
+
+    // ===== Utility =====
+    function esc(s) {
+      var d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function truncId(id, len) {
+      len = len || 12;
+      if (!id) return '---';
+      return id.length > len ? id.slice(0, len) + '...' : id;
+    }
+
+    function fmtDuration(sec) {
+      if (sec == null) return '--';
+      if (sec < 60) return sec.toFixed(1) + 's';
+      if (sec < 3600) return (sec / 60).toFixed(1) + 'm';
+      return (sec / 3600).toFixed(1) + 'h';
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return '--';
+      try {
+        var d = new Date(iso);
+        return d.toLocaleString(undefined, {
+          month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit'
+        });
+      } catch(e) { return iso; }
+    }
+
+    function fmtTimelineLabel(hourStr) {
+      // Parse "2026-03-15T09" -> human-readable "Mar 15, 9 PM"
+      if (!hourStr) return '';
+      try {
+        var d = new Date(hourStr + ':00:00');
+        if (isNaN(d.getTime())) return hourStr;
+        return d.toLocaleString('en-US', {
+          month: 'short', day: 'numeric', hour: 'numeric'
+        });
+      } catch(e) { return hourStr; }
+    }
+
+    function fmtSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function agentColor(type) {
+      return AGENT_COLORS[type] || 'document';
+    }
+
+    function agentHex(type) {
+      return AGENT_HEX[type] || '#6b7280';
+    }
+
+    function fmtTokens(n) {
+      if (n == null || n === 0) return '0';
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return '' + n;
+    }
+
+    // ===== Flatten tree for waterfall =====
+    function flattenTree(node, depth, sessionStart, sessionDuration, result) {
+      depth = depth || 0;
+      result = result || [];
+      if (node.type !== 'event') {
+        result.push({
+          type: node.type,
+          agent_type: node.agent_type,
+          id: node.id,
+          started_at: node.started_at,
+          duration_seconds: node.duration_seconds,
+          tool_calls: node.tool_calls,
+          tools: node.tools || {},
+          depth: depth
+        });
+      }
+      if (node.children) {
+        node.children.forEach(function(c) {
+          flattenTree(c, depth + 1, sessionStart, sessionDuration, result);
+        });
+      }
+      return result;
+    }
+
+    // ===== Tool summary string =====
+    function toolSummaryInline(tools) {
+      if (!tools || !Object.keys(tools).length) return '';
+      return Object.entries(tools)
+        .sort(function(a, b) { return b[1] - a[1]; })
+        .map(function(e) { return e[0] + ':' + e[1]; })
+        .join(' ');
+    }
+
+    // ===== Sessions =====
+    async function loadSessions() {
+      try {
+        var resp = await fetch('/api/sessions');
+        var data = await resp.json();
+        sessionsCache = data;
+        renderSessions(data);
+      } catch(e) {
+        document.getElementById('session-list').innerHTML =
+          '<div class="empty-state">Failed to load sessions</div>';
+      }
+    }
+
+    function renderSessions(sessions) {
+      var el = document.getElementById('session-list');
+      if (!sessions.length) {
+        el.innerHTML = '<div class="empty-state">No sessions recorded yet</div>';
+        return;
+      }
+
+      // Preserve expanded sessions: only do a full re-render on first load
+      // or when session count changes. Otherwise, update headers in-place.
+      var existingCards = el.querySelectorAll('.session-card');
+      var expandedSids = {};
+      existingCards.forEach(function(c) {
+        if (c.classList.contains('expanded')) {
+          expandedSids[c.dataset.sid] = true;
+        }
+      });
+
+      // If we have existing cards and count matches, do incremental update
+      if (existingCards.length > 0 && existingCards.length === sessions.length) {
+        sessions.forEach(function(s) {
+          var card = el.querySelector('.session-card[data-sid="' + s.session_id + '"]');
+          if (!card) return;
+          // Update stats in header without destroying the body
+          var statsEl = card.querySelector('.session-stats');
+          if (statsEl) {
+            statsEl.innerHTML =
+              '<span class="stat">agents <b>' + s.agent_count + '</b></span>' +
+              '<span class="stat">workers <b>' + s.worker_count + '</b></span>' +
+              '<span class="stat">events <b>' + s.event_count + '</b></span>' +
+              '<span class="stat">tools <b>' + s.tool_call_count + '</b></span>';
+          }
+        });
+        return;
+      }
+
+      el.innerHTML = sessions.map(function(s) {
+        var flowPills = (s.agent_types || []).map(function(t) {
+          return '<span class="flow-pill" style="background:' + agentHex(t) + '">' + esc(t) + '</span>';
+        }).join('<span class="flow-arrow">&rsaquo;</span>');
+
+        var displayName = s.name || truncId(s.session_id, 50);
+
+        // Token badges
+        var tokenHtml = '';
+        if (s.input_tokens || s.output_tokens || s.cache_creation_tokens || s.cache_read_tokens) {
+          tokenHtml = '<div class="token-badges">';
+          if (s.input_tokens) tokenHtml += '<span class="token-badge">In: <b>' + fmtTokens(s.input_tokens) + '</b></span>';
+          if (s.output_tokens) tokenHtml += '<span class="token-badge">Out: <b>' + fmtTokens(s.output_tokens) + '</b></span>';
+          var cacheTotal = (s.cache_creation_tokens || 0) + (s.cache_read_tokens || 0);
+          if (cacheTotal) tokenHtml += '<span class="token-badge">Cache: <b>' + fmtTokens(cacheTotal) + '</b></span>';
+          if (s.message_count) tokenHtml += '<span class="token-badge">Msgs: <b>' + s.message_count + '</b></span>';
+          tokenHtml += '</div>';
+        }
+
+        return '<div class="session-card" data-sid="' + esc(s.session_id) + '">' +
+          '<div class="session-head" onclick="toggleSession(this)">' +
+            '<div>' +
+              '<span class="session-name" onclick="startRenameSession(event, \'' + esc(s.session_id) + '\')" title="Click to rename">' + esc(displayName) + '</span>' +
+              '<div class="session-time">' + esc(fmtTime(s.first_timestamp)) +
+                ' &mdash; ' + esc(fmtDuration(s.duration_seconds)) + '</div>' +
+              '<div class="session-flow">' + flowPills + '</div>' +
+              tokenHtml +
+            '</div>' +
+            '<div class="session-stats">' +
+              '<span class="stat">agents <b>' + s.agent_count + '</b></span>' +
+              '<span class="stat">workers <b>' + s.worker_count + '</b></span>' +
+              '<span class="stat">events <b>' + s.event_count + '</b></span>' +
+              '<span class="stat">tools <b>' + s.tool_call_count + '</b></span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="session-body">' +
+            '<div class="tree-loading">Loading tree...</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+
+      // Re-expand sessions that were open before the full re-render
+      Object.keys(expandedSids).forEach(function(sid) {
+        var card = el.querySelector('.session-card[data-sid="' + sid + '"]');
+        if (card) {
+          var head = card.querySelector('.session-head');
+          if (head) toggleSession(head);
+        }
+      });
+    }
+
+    function startRenameSession(event, sid) {
+      event.stopPropagation();
+      var nameEl = event.target;
+      if (nameEl.tagName === 'INPUT') return;
+      var currentName = nameEl.textContent;
+      var input = document.createElement('input');
+      input.className = 'session-name-input';
+      input.type = 'text';
+      input.value = currentName;
+      nameEl.replaceWith(input);
+      input.focus();
+      input.select();
+
+      function finishRename() {
+        var newName = input.value.trim();
+        if (newName && newName !== currentName) {
+          fetch('/api/sessions/' + encodeURIComponent(sid) + '/name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+          }).then(function() {
+            // Update cache
+            sessionsCache.forEach(function(s) {
+              if (s.session_id === sid) s.name = newName;
+            });
+          }).catch(function() {});
+        }
+        var span = document.createElement('span');
+        span.className = 'session-name';
+        span.textContent = newName || currentName;
+        span.title = 'Click to rename';
+        span.onclick = function(e) { startRenameSession(e, sid); };
+        input.replaceWith(span);
+      }
+
+      input.addEventListener('blur', finishRename);
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { input.blur(); }
+        if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+      });
+    }
+
+    async function toggleSession(headEl) {
+      var card = headEl.closest('.session-card');
+      var wasExpanded = card.classList.contains('expanded');
+      card.classList.toggle('expanded');
+      if (wasExpanded) {
+        // Destroy cytoscape instance when collapsing
+        var sid = card.dataset.sid;
+        if (cytoscapeInstances[sid]) {
+          cytoscapeInstances[sid].destroy();
+          delete cytoscapeInstances[sid];
+        }
+        return;
+      }
+
+      var sid = card.dataset.sid;
+      var body = card.querySelector('.session-body');
+
+      if (treeCacheMap[sid]) {
+        renderSessionBody(body, sid, treeCacheMap[sid]);
+        return;
+      }
+
+      body.innerHTML = '<div class="tree-loading">Loading tree...</div>';
+
+      try {
+        var resp = await fetch('/api/sessions/' + encodeURIComponent(sid) + '/tree');
+        var data = await resp.json();
+        treeCacheMap[sid] = data;
+        renderSessionBody(body, sid, data);
+      } catch(e) {
+        body.innerHTML = '<div class="tree-loading">Failed to load tree</div>';
+      }
+    }
+
+    function renderSessionBody(body, sid, treeData) {
+      var html = '<div class="session-body-inner">';
+      html += '<div class="trace-container" id="trace-' + esc(sid) + '"></div>';
+      html += '</div>';
+
+      body.innerHTML = html;
+
+      requestAnimationFrame(function() {
+        initTrace(sid);
+      });
+    }
+
+    function switchView(sid, view) {
+      // Only trace view remains; kept for compatibility
+      var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
+      if (card && treeCacheMap[sid]) {
+        var body = card.querySelector('.session-body');
+        renderSessionBody(body, sid, treeCacheMap[sid]);
+      }
+    }
+
+    // ===== Cytoscape Graph =====
+    function treeToElements(node, parentId, isRoot) {
+      var elements = [];
+
+      // Skip event nodes
+      if (node.type === 'event') return elements;
+
+      // Root session node: render as small hub connecting all agents
+      if (isRoot && node.type === 'session') {
+        var rootId = 'session-root';
+        elements.push({
+          data: {
+            id: rootId,
+            label: 'Session',
+            nodeType: 'session',
+            agentType: null,
+            duration: node.duration_seconds,
+            toolCalls: node.tool_calls || 0,
+            tools: node.tools || {},
+            startedAt: node.started_at,
+            rawId: node.id,
+            color: '#7950f2',
+            shape: 'diamond'
+          }
+        });
+        if (node.children) {
+          node.children.forEach(function(child) {
+            if (child.type === 'event') return;
+            var childEls = treeToElements(child, rootId, false);
+            elements = elements.concat(childEls);
+          });
+        }
+        return elements;
+      }
+
+      var nodeId = node.type + '-' + (node.id || Math.random().toString(36).slice(2));
+
+      var label = node.agent_type || node.type;
+      if (node.invocations && node.invocations > 1) {
+        label += ' (' + node.invocations + 'x)';
+      }
+      if (node.duration_seconds != null) {
+        var dur = node.duration_seconds;
+        if (dur >= 60) label += '\n' + (dur / 60).toFixed(1) + 'm';
+        else label += '\n' + dur.toFixed(0) + 's';
+      }
+      if (node.tool_calls) {
+        label += '\n' + node.tool_calls + ' tools';
+      }
+
+      var shape = 'round-rectangle';
+      if (node.type === 'worker') shape = 'ellipse';
+
+      var color = agentHex(node.agent_type);
+
+      elements.push({
+        data: {
+          id: nodeId,
+          label: label,
+          nodeType: node.type,
+          agentType: node.agent_type,
+          duration: node.duration_seconds,
+          toolCalls: node.tool_calls || 0,
+          tools: node.tools || {},
+          startedAt: node.started_at,
+          rawId: node.id,
+          invocations: node.invocations || 1,
+          color: color,
+          shape: shape
+        }
+      });
+
+      if (parentId) {
+        elements.push({
+          data: {
+            source: parentId,
+            target: nodeId
+          }
+        });
+      }
+
+      if (node.children) {
+        node.children.forEach(function(child) {
+          var childEls = treeToElements(child, nodeId, false);
+          elements = elements.concat(childEls);
+        });
+      }
+
+      return elements;
+    }
+
+    function initGraph(sid, treeData) {
+      var container = document.getElementById('graph-' + sid);
+      if (!container) return;
+      if (typeof cytoscape === 'undefined') {
+        container.innerHTML = '<div class="empty-state">Cytoscape.js not loaded (CDN unavailable)</div>';
+        return;
+      }
+
+      var elements = treeToElements(treeData, null, true);
+
+      // Track collapsed (hidden) nodes
+      var hiddenChildren = {};
+
+      var cy = cytoscape({
+        container: container,
+        elements: elements,
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'label': 'data(label)',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'font-size': '10px',
+              'font-family': "'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+              'color': '#fff',
+              'text-wrap': 'wrap',
+              'text-max-width': '80px',
+              'background-color': 'data(color)',
+              'shape': 'data(shape)',
+              'width': 'label',
+              'height': 'label',
+              'padding': '12px',
+              'border-width': 2,
+              'border-color': '#373a40',
+              'text-outline-width': 0
+            }
+          },
+          {
+            selector: 'node[nodeType="session"]',
+            style: {
+              'width': 60,
+              'height': 60,
+              'font-size': '11px',
+              'font-weight': 'bold'
+            }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': 2,
+              'line-color': '#495057',
+              'target-arrow-color': '#495057',
+              'target-arrow-shape': 'triangle',
+              'curve-style': 'bezier',
+              'arrow-scale': 0.8
+            }
+          }
+        ],
+        layout: {
+          name: 'dagre',
+          rankDir: 'LR',
+          nodeSep: 50,
+          rankSep: 80,
+          animate: false,
+          fit: true,
+          padding: 30
+        },
+        minZoom: 0.3,
+        maxZoom: 3,
+        wheelSensitivity: 0.3
+      });
+
+      cytoscapeInstances[sid] = cy;
+
+      // Click node -> show detail panel
+      cy.on('tap', 'node', function(evt) {
+        var nodeData = evt.target.data();
+        showDetailPanel(sid, nodeData);
+      });
+
+      // Double-click node -> toggle children visibility
+      cy.on('dbltap', 'node', function(evt) {
+        var nodeId = evt.target.id();
+        toggleNodeChildren(cy, nodeId, hiddenChildren);
+      });
+
+      // Click background -> hide detail panel
+      cy.on('tap', function(evt) {
+        if (evt.target === cy) {
+          hideDetailPanel(sid);
+        }
+      });
+    }
+
+    function toggleNodeChildren(cy, nodeId, hiddenChildren) {
+      var node = cy.getElementById(nodeId);
+      if (!node || node.length === 0) return;
+
+      if (hiddenChildren[nodeId]) {
+        // Restore hidden children
+        var toRestore = hiddenChildren[nodeId];
+        toRestore.restore();
+        delete hiddenChildren[nodeId];
+        cy.layout({
+          name: 'dagre', rankDir: 'LR', nodeSep: 50, rankSep: 80,
+          animate: true, animationDuration: 300, fit: true, padding: 30
+        }).run();
+      } else {
+        // Find all descendants and hide them
+        var descendants = getDescendants(cy, nodeId);
+        if (descendants.length === 0) return;
+        hiddenChildren[nodeId] = descendants;
+        descendants.remove();
+        cy.layout({
+          name: 'dagre', rankDir: 'LR', nodeSep: 50, rankSep: 80,
+          animate: true, animationDuration: 300, fit: true, padding: 30
+        }).run();
+      }
+    }
+
+    function getDescendants(cy, nodeId) {
+      var result = cy.collection();
+      var directEdges = cy.edges('[source="' + nodeId + '"]');
+      directEdges.forEach(function(edge) {
+        var target = edge.target();
+        result = result.union(edge);
+        result = result.union(target);
+        result = result.union(getDescendants(cy, target.id()));
+      });
+      return result;
+    }
+
+    // ===== Detail Panel =====
+    function showDetailPanel(sid, nodeData) {
+      var panel = document.getElementById('detail-' + sid);
+      var content = document.getElementById('detail-content-' + sid);
+      if (!panel || !content) return;
+
+      var html = '<h4>' + esc(nodeData.agentType || nodeData.nodeType || 'Node') + '</h4>';
+      html += '<div class="detail-row"><span class="dl">Type</span><span class="dv">' + esc(nodeData.nodeType) + '</span></div>';
+      if (nodeData.agentType) {
+        html += '<div class="detail-row"><span class="dl">Agent Type</span><span class="dv">' + esc(nodeData.agentType) + '</span></div>';
+      }
+      html += '<div class="detail-row"><span class="dl">ID</span><span class="dv">' + esc(truncId(nodeData.rawId, 16)) + '</span></div>';
+      html += '<div class="detail-row"><span class="dl">Duration</span><span class="dv">' + esc(fmtDuration(nodeData.duration)) + '</span></div>';
+      html += '<div class="detail-row"><span class="dl">Tool Calls</span><span class="dv">' + (nodeData.toolCalls || 0) + '</span></div>';
+
+      // Tool breakdown
+      var tools = nodeData.tools;
+      if (tools && Object.keys(tools).length > 0) {
+        var sorted = Object.entries(tools).sort(function(a, b) { return b[1] - a[1]; });
+        var total = sorted.reduce(function(s, e) { return s + e[1]; }, 0);
+
+        html += '<div class="tool-bar-container">';
+        html += '<div class="tool-stacked-bar">';
+        sorted.forEach(function(entry) {
+          var pct = total > 0 ? (entry[1] / total * 100) : 0;
+          html += '<div class="tool-stacked-segment" style="width:' + pct + '%;background:' + getToolColor(entry[0]) + '" title="' + esc(entry[0]) + ': ' + entry[1] + '"></div>';
+        });
+        html += '</div>';
+        html += '</div>';
+
+        html += '<table class="tool-table">';
+        html += '<thead><tr><th>Tool</th><th>Count</th></tr></thead><tbody>';
+        sorted.forEach(function(entry) {
+          html += '<tr>';
+          html += '<td><span class="tool-color-dot" style="background:' + getToolColor(entry[0]) + '"></span>' + esc(entry[0]) + '</td>';
+          html += '<td>' + entry[1] + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+      }
+
+      // "View Task" button if this node has an ID (task_uuid)
+      if (nodeData.rawId && nodeData.nodeType !== 'session') {
+        html += '<button class="view-task-btn" onclick="showTaskOverlay(\'' + esc(nodeData.rawId) + '\')">View Task</button>';
+      }
+
+      content.innerHTML = html;
+      panel.classList.add('open');
+    }
+
+    function hideDetailPanel(sid) {
+      var panel = document.getElementById('detail-' + sid);
+      if (panel) panel.classList.remove('open');
+    }
+
+    // ===== Task Content Overlay =====
+    async function showTaskOverlay(taskUuid) {
+      try {
+        var resp = await fetch('/api/tasks/' + encodeURIComponent(taskUuid) + '/content');
+        if (!resp.ok) {
+          alert('Task not found');
+          return;
+        }
+        var data = await resp.json();
+        renderTaskOverlay(data);
+      } catch(e) {
+        alert('Failed to fetch task content');
+      }
+    }
+
+    function renderTaskOverlay(data) {
+      // Remove existing overlay if any
+      var existing = document.getElementById('task-overlay');
+      if (existing) existing.remove();
+
+      var overlay = document.createElement('div');
+      overlay.id = 'task-overlay';
+      overlay.className = 'task-overlay';
+
+      var allTabs = [
+        { key: 'task_md', label: 'task.md' },
+        { key: 'result_md', label: 'result.md' },
+        { key: 'notes_md', label: 'notes.md' }
+      ];
+
+      // Template patterns to treat as empty
+      var emptyPatterns = [
+        '(empty)', '',
+        '# Open tasks\n\n# Notes',
+        '# Open tasks\n# Notes',
+        '# Open tasks\r\n\r\n# Notes',
+        '# Open tasks\r\n# Notes'
+      ];
+
+      function isEmptyContent(content) {
+        if (!content) return true;
+        var trimmed = content.trim();
+        return emptyPatterns.some(function(p) { return trimmed === p; });
+      }
+
+      // Filter out empty/template tabs
+      var tabs = allTabs.filter(function(tab) {
+        return !isEmptyContent(data[tab.key]);
+      });
+
+      if (tabs.length === 0) {
+        // Nothing to show
+        return;
+      }
+
+      var html = '<div class="task-overlay-inner">';
+      html += '<button class="task-overlay-close" onclick="closeTaskOverlay()">&times;</button>';
+      html += '<h4 style="font-size:13px;color:var(--text-bright);margin-bottom:12px;">Task: ' + esc(truncId(data.task_uuid, 16)) + '</h4>';
+      html += '<div class="task-overlay-tabs">';
+      tabs.forEach(function(tab, i) {
+        html += '<button class="task-overlay-tab' + (i === 0 ? ' active' : '') + '" onclick="switchTaskTab(\'' + tab.key + '\', this)">' + tab.label + '</button>';
+      });
+      html += '</div>';
+      tabs.forEach(function(tab, i) {
+        var display = i === 0 ? 'block' : 'none';
+        var content = data[tab.key];
+        var rendered;
+        if (typeof marked !== 'undefined') {
+          try { rendered = marked.parse(content); } catch(e) { rendered = esc(content); }
+        } else {
+          rendered = '<pre style="white-space:pre-wrap">' + esc(content) + '</pre>';
+        }
+        html += '<div class="task-overlay-content" id="task-tab-' + tab.key + '" style="display:' + display + '">' + rendered + '</div>';
+      });
+      html += '</div>';
+
+      overlay.innerHTML = html;
+      overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) closeTaskOverlay();
+      });
+      document.body.appendChild(overlay);
+    }
+
+    function switchTaskTab(key, btn) {
+      document.querySelectorAll('.task-overlay-tab').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.querySelectorAll('.task-overlay-content').forEach(function(c) { c.style.display = 'none'; });
+      var el = document.getElementById('task-tab-' + key);
+      if (el) el.style.display = 'block';
+    }
+
+    function closeTaskOverlay() {
+      var overlay = document.getElementById('task-overlay');
+      if (overlay) overlay.remove();
+    }
+
+    async function searchAndShowTask(sessionId, agentType, startTime) {
+      try {
+        var resp = await fetch('/api/tasks/find?agent_type=' + encodeURIComponent(agentType));
+        if (!resp.ok) {
+          // No tasks found for this agent type
+          return;
+        }
+        var data = await resp.json();
+        renderTaskOverlay(data);
+      } catch(e) {
+        // silently fail
+      }
+    }
+
+    // ===== Waterfall/Gantt View =====
+    function renderWaterfall(treeData) {
+      var sessionStart = treeData.started_at ? new Date(treeData.started_at).getTime() : 0;
+      var sessionDuration = treeData.duration_seconds || 1;
+      var nodes = flattenTree(treeData);
+
+      if (nodes.length <= 1) {
+        return '<div class="empty-state">No timing data available</div>';
+      }
+
+      var html = '<div class="waterfall-container">';
+      nodes.forEach(function(n) {
+        if (!n.started_at) return;
+
+        var nodeStart = new Date(n.started_at).getTime();
+        var leftPct = sessionDuration > 0 ? ((nodeStart - sessionStart) / 1000 / sessionDuration * 100) : 0;
+        var widthPct = sessionDuration > 0 && n.duration_seconds ? (n.duration_seconds / sessionDuration * 100) : 1;
+
+        leftPct = Math.max(0, Math.min(leftPct, 100));
+        widthPct = Math.max(0.5, Math.min(widthPct, 100 - leftPct));
+
+        var indentClass = '';
+        if (n.depth === 1) indentClass = ' indent-1';
+        else if (n.depth === 2) indentClass = ' indent-2';
+        else if (n.depth >= 3) indentClass = ' indent-3';
+
+        var label = n.type === 'session' ? 'Session' : (n.agent_type || n.type);
+        var color = n.type === 'session' ? '#7950f2' : agentHex(n.agent_type);
+
+        html += '<div class="waterfall-row">';
+        html += '<div class="waterfall-label' + indentClass + '" title="' + esc(n.id || '') + '">' + esc(label) + '</div>';
+        html += '<div class="waterfall-track">';
+        html += '<div class="waterfall-bar" style="left:' + leftPct + '%;width:' + widthPct + '%;background:' + color + '">';
+        html += esc(fmtDuration(n.duration_seconds));
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+      return html;
+    }
+
+    // ===== D3 Trace Timeline =====
+    function initTrace(sid) {
+      var container = document.getElementById('trace-' + sid);
+      if (!container || typeof d3 === 'undefined') {
+        if (container) container.innerHTML = '<div class="empty-state">D3.js not loaded (CDN unavailable)</div>';
+        return;
+      }
+
+      // Find session data from cache for token info
+      var sessionData = null;
+      if (sessionsCache) {
+        sessionData = sessionsCache.find(function(s) { return s.session_id === sid; });
+      }
+
+      fetch('/api/sessions/' + encodeURIComponent(sid) + '/spans')
+        .then(function(r) { return r.json(); })
+        .then(function(spans) { renderTrace(container, spans, sid, sessionData); })
+        .catch(function() {
+          container.innerHTML = '<div class="empty-state">Failed to load trace data</div>';
+        });
+    }
+
+    function renderTrace(container, spans, sid, sessionData) {
+      if (!spans || spans.length === 0) {
+        container.innerHTML = '<div class="empty-state">No span data yet. Spans appear after reinstalling with SubagentStop hook.</div>';
+        return;
+      }
+
+      // Parse timestamps
+      var parsed = spans.map(function(s) {
+        return {
+          type: s.type,
+          id: s.id,
+          taskUuid: s.task_uuid || '',
+          agentType: s.agent_type || s.type,
+          parentId: s.parent_id || '',
+          start: s.start ? new Date(s.start).getTime() : 0,
+          end: s.end ? new Date(s.end).getTime() : null,
+          isResume: s.is_resume,
+          toolCalls: s.tool_calls || 0
+        };
+      }).filter(function(s) { return s.start > 0; });
+
+      if (parsed.length === 0) {
+        container.innerHTML = '<div class="empty-state">No timing data in spans</div>';
+        return;
+      }
+
+      // Time range
+      var tMin = d3.min(parsed, function(d) { return d.start; });
+      var tMax = d3.max(parsed, function(d) { return d.end || d.start; });
+      var tRange = tMax - tMin || 1000;
+      tMax = tMax + tRange * 0.05;
+      tMin = tMin - tRange * 0.02;
+
+      parsed.sort(function(a, b) { return a.start - b.start; });
+
+      // Separate agents and workers
+      var agents = parsed.filter(function(s) { return s.type === 'agent'; });
+      var workers = parsed.filter(function(s) { return s.type === 'worker'; });
+
+      // --- Group agents by type, ordered by first appearance ---
+      var typeOrder = [];
+      var typeMap = {}; // agentType -> [spans]
+      agents.forEach(function(s) {
+        if (!typeMap[s.agentType]) {
+          typeMap[s.agentType] = [];
+          typeOrder.push(s.agentType);
+        }
+        typeMap[s.agentType].push(s);
+      });
+
+      // Within each type group, assign rows. Resumes share row with their original (same agent_id).
+      // Color variants: track unique agent_ids per type
+      var nextRow = 1; // row 0 = session
+      var rowByAgentId = {};
+      var typeFirstRow = {}; // agentType -> first row index
+      var typeIdCounters = {}; // agentType -> count of unique agent_ids (for color shift)
+      var agentIdTypeIndex = {}; // agent_id -> typeIndex for color
+
+      typeOrder.forEach(function(aType) {
+        var group = typeMap[aType];
+        typeFirstRow[aType] = nextRow;
+        typeIdCounters[aType] = 0;
+
+        // Sort group by start time
+        group.sort(function(a, b) { return a.start - b.start; });
+
+        group.forEach(function(s) {
+          if (s.isResume && rowByAgentId[s.id] != null) {
+            // Resume shares row with original
+            s.row = rowByAgentId[s.id];
+            s.typeIndex = agentIdTypeIndex[s.id] || 0;
+          } else if (!s.isResume && rowByAgentId[s.id] != null) {
+            // Same agent_id seen again (non-resume) — share row
+            s.row = rowByAgentId[s.id];
+            s.typeIndex = agentIdTypeIndex[s.id] || 0;
+          } else {
+            s.row = nextRow++;
+            rowByAgentId[s.id] = s.row;
+            s.typeIndex = typeIdCounters[aType];
+            agentIdTypeIndex[s.id] = s.typeIndex;
+            typeIdCounters[aType]++;
+          }
+        });
+      });
+      var agentRowCount = nextRow;
+
+      // Workers get typeIndex 0
+      workers.forEach(function(s) { s.typeIndex = 0; });
+
+      // Map workers to parent agents
+      var spanByTaskUuid = {};
+      var spanByWorkerId = {};
+      agents.forEach(function(s) {
+        if (s.taskUuid) spanByTaskUuid[s.taskUuid] = s;
+      });
+      workers.forEach(function(s) { spanByWorkerId[s.id] = s; });
+
+      // Group workers by parent agent id
+      var workersByAgentId = {};
+      workers.forEach(function(w) {
+        if (!w.parentId) return;
+        var parts = w.parentId.split(':');
+        var parentType = parts[0];
+        var parentIdVal = parts.slice(1).join(':');
+        var parentSpan = null;
+        if (parentType === 'task') parentSpan = spanByTaskUuid[parentIdVal];
+        else if (parentType === 'worker') parentSpan = spanByWorkerId[parentIdVal];
+        if (!parentSpan) return;
+        var agentId = parentSpan.type === 'agent' ? parentSpan.id : parentSpan._parentAgentId;
+        if (!agentId) return;
+        w._parentAgentId = agentId;
+        if (!workersByAgentId[agentId]) workersByAgentId[agentId] = [];
+        workersByAgentId[agentId].push(w);
+      });
+
+      // Compute stats per type group
+      var typeStats = {};
+      typeOrder.forEach(function(aType) {
+        var group = typeMap[aType];
+        var totalTools = 0;
+        var totalWorkers = 0;
+        var seenAgentIds = {};
+        group.forEach(function(s) {
+          totalTools += s.toolCalls || 0;
+          if (!seenAgentIds[s.id]) {
+            seenAgentIds[s.id] = true;
+            totalWorkers += (workersByAgentId[s.id] || []).length;
+          }
+        });
+        typeStats[aType] = { tools: totalTools, workers: totalWorkers };
+      });
+
+      // Layout constants
+      var labelWidth = 120;
+      var rowHeight = 36;
+      var topMargin = 30;
+      var bottomMargin = 20;
+      var rightMargin = 40;
+      var svgWidth = Math.max(container.clientWidth - 28, 600);
+      var chartWidth = svgWidth - labelWidth - rightMargin;
+
+      var svgHeight = topMargin + agentRowCount * rowHeight + bottomMargin;
+
+      // Time scale
+      var xScale = d3.scaleLinear()
+        .domain([tMin, tMax])
+        .range([0, chartWidth]);
+
+      // Resolve color for a span
+      function spanColor(s) {
+        var base = agentHex(s.agentType);
+        if (s.typeIndex > 0) return shiftColor(base, s.typeIndex);
+        return base;
+      }
+
+      container.innerHTML = '';
+      var svg = d3.select(container).append('svg')
+        .attr('width', svgWidth)
+        .attr('height', svgHeight);
+
+      // Defs: arrow markers
+      var defs = svg.append('defs');
+      defs.append('marker')
+        .attr('id', 'trace-arrow-' + sid)
+        .attr('viewBox', '0 0 10 10')
+        .attr('refX', 8).attr('refY', 5)
+        .attr('markerWidth', 6).attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M 0 0 L 10 5 L 0 10 z')
+        .attr('fill', 'rgba(255,255,255,0.3)');
+
+      defs.append('marker')
+        .attr('id', 'trace-return-' + sid)
+        .attr('viewBox', '0 0 10 10')
+        .attr('refX', 5).attr('refY', 2)
+        .attr('markerWidth', 6).attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M 0 10 L 5 0 L 10 10 z')
+        .attr('fill', 'rgba(168,130,255,0.35)');
+
+      // Tooltip
+      var tooltip = d3.select(container).append('div')
+        .attr('class', 'trace-tooltip')
+        .style('display', 'none');
+
+      // Time axis
+      var axisG = svg.append('g')
+        .attr('transform', 'translate(' + labelWidth + ',' + topMargin + ')');
+
+      var tickCount = Math.min(8, Math.floor(chartWidth / 80));
+      var ticks = xScale.ticks(tickCount);
+
+      function drawAxisTicks(totalRows) {
+        ticks.forEach(function(t) {
+          var x = xScale(t);
+          axisG.append('line')
+            .attr('class', 'axis-line')
+            .attr('x1', x).attr('y1', -10)
+            .attr('x2', x).attr('y2', totalRows * rowHeight);
+          axisG.append('text')
+            .attr('class', 'axis-text')
+            .attr('x', x).attr('y', -14)
+            .attr('text-anchor', 'middle')
+            .text(formatTraceTime(t, tMin));
+        });
+      }
+      drawAxisTicks(agentRowCount);
+
+      // Arrows layer
+      var arrowG = svg.append('g')
+        .attr('transform', 'translate(' + labelWidth + ',' + topMargin + ')');
+
+      // Rows layer
+      var rowsG = svg.append('g')
+        .attr('transform', 'translate(0,' + topMargin + ')');
+
+      // Session bar precomputed values
+      var sessionBarStart = xScale(tMin + tRange * 0.02);
+      var sessionBarEnd = xScale(tMax - tRange * 0.05);
+      var sessionBarW = Math.max(4, sessionBarEnd - sessionBarStart);
+
+      // Expanded workers state: agentId -> { workerRows: [], g: <g element> }
+      var expandedState = {};
+
+      // --- Drawing functions ---
+
+      function drawSessionBar() {
+        rowsG.append('text')
+          .attr('class', 'row-label')
+          .attr('x', 8)
+          .attr('y', rowHeight / 2)
+          .style('fill', '#7950f2')
+          .text('session');
+        rowsG.append('rect')
+          .attr('class', 'span-bar')
+          .attr('x', labelWidth + sessionBarStart)
+          .attr('y', 4)
+          .attr('width', sessionBarW)
+          .attr('height', rowHeight - 8)
+          .attr('fill', '#7950f2')
+          .attr('opacity', 0.4)
+          .attr('rx', 3).attr('ry', 3);
+
+        // Token stats on session bar (if available)
+        if (sessionData) {
+          var parts = [];
+          if (sessionData.input_tokens) parts.push('In:' + fmtTokens(sessionData.input_tokens));
+          if (sessionData.output_tokens) parts.push('Out:' + fmtTokens(sessionData.output_tokens));
+          var cacheTotal = (sessionData.cache_creation_tokens || 0) + (sessionData.cache_read_tokens || 0);
+          if (cacheTotal) parts.push('Cache:' + fmtTokens(cacheTotal));
+          if (sessionData.tool_call_count) parts.push(sessionData.tool_call_count + ' tools');
+          if (parts.length > 0) {
+            rowsG.append('text')
+              .attr('x', labelWidth + sessionBarStart + 6)
+              .attr('y', rowHeight / 2)
+              .attr('class', 'span-label')
+              .style('fill', 'rgba(255,255,255,0.6)')
+              .style('font-size', '10px')
+              .text(parts.join('  '));
+          }
+        }
+      }
+
+      function drawArrows() {
+        // Down arrows from session to each non-resume agent
+        agents.forEach(function(s) {
+          if (s.isResume) return;
+          var startX = xScale(s.start);
+          var fromY = rowHeight - 4;
+          var toY = s.row * rowHeight + rowHeight / 2;
+          arrowG.append('path')
+            .attr('class', 'arrow-line')
+            .attr('d', 'M' + startX + ',' + fromY + ' L' + startX + ',' + toY)
+            .attr('marker-end', 'url(#trace-arrow-' + sid + ')');
+        });
+
+        // Return arrows (dashed, up from agent end to session)
+        agents.forEach(function(s) {
+          if (!s.end || s.isResume) return;
+          var endX = xScale(s.end);
+          var fromY = s.row * rowHeight + 4;
+          var toY = rowHeight - 4;
+          arrowG.append('path')
+            .attr('d', 'M' + endX + ',' + fromY + ' L' + endX + ',' + toY)
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(168,130,255,0.2)')
+            .attr('stroke-width', 1)
+            .attr('stroke-dasharray', '3,3')
+            .attr('marker-end', 'url(#trace-return-' + sid + ')');
+        });
+      }
+
+      function drawAgentBars() {
+        var labeledTypes = {};
+
+        typeOrder.forEach(function(aType) {
+          var group = typeMap[aType];
+          var firstRow = typeFirstRow[aType];
+          var stats = typeStats[aType];
+
+          group.forEach(function(s) {
+            var y = s.row * rowHeight;
+            var color = spanColor(s);
+
+            // Type label: only on the first row of each type group
+            if (s.row === firstRow && !labeledTypes[aType]) {
+              rowsG.append('text')
+                .attr('class', 'row-label')
+                .attr('x', 8)
+                .attr('y', y + rowHeight / 2)
+                .text(aType);
+              labeledTypes[aType] = true;
+            }
+
+            // Bar
+            var barX = xScale(s.start);
+            var barEnd = s.end ? xScale(s.end) : xScale(s.start) + 8;
+            var barW = Math.max(4, barEnd - barX);
+
+            var bar = rowsG.append('rect')
+              .attr('class', 'span-bar' + (s.isResume ? ' resume' : ''))
+              .attr('x', labelWidth + barX)
+              .attr('y', y + 4)
+              .attr('width', barW)
+              .attr('height', rowHeight - 8)
+              .attr('fill', color)
+              .attr('opacity', s.isResume ? 0.7 : 0.9)
+              .style('cursor', s.taskUuid ? 'pointer' : 'default');
+
+            if (s.isResume) {
+              bar.attr('stroke', 'rgba(255,255,255,0.4)')
+                .attr('stroke-width', 1.5)
+                .attr('stroke-dasharray', '4,2');
+            }
+
+            // Click to view task — works with taskUuid or searches by agent_type
+            (function(span) {
+              bar.on('click', function() {
+                if (span.taskUuid) {
+                  showTaskOverlay(span.taskUuid);
+                } else {
+                  // Search task dirs by agent type for this session
+                  searchAndShowTask(sid, span.agentType, span.start);
+                }
+              });
+            })(s);
+            bar.style('cursor', 'pointer');
+
+            // Duration + tool count text
+            var durText = s.end ? fmtDuration((s.end - s.start) / 1000) : 'running...';
+            var toolText = s.toolCalls > 0 ? ' \u00b7 ' + s.toolCalls + ' tools' : '';
+
+            // Check if there's a next bar on the same row (resume) — limit outside text
+            var nextBarOnRow = agents.find(function(a) {
+              return a.row === s.row && a.start > s.start;
+            });
+            var gapToNext = nextBarOnRow ? xScale(nextBarOnRow.start) - (barX + barW) : Infinity;
+
+            // Clip path to prevent text overflow beyond bar
+            var clipId = 'clip-' + sid.replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + (s.id || '').replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + s.row;
+            defs.append('clipPath').attr('id', clipId)
+              .append('rect')
+              .attr('x', labelWidth + barX)
+              .attr('y', y)
+              .attr('width', barW)
+              .attr('height', rowHeight);
+
+            if (s.end && barW > 40) {
+              var fullText = durText + toolText;
+              var estWidth = fullText.length * 7;
+
+              if (estWidth <= barW - 12) {
+                rowsG.append('text')
+                  .attr('class', 'span-label')
+                  .attr('x', labelWidth + barX + 6)
+                  .attr('y', y + rowHeight / 2)
+                  .attr('clip-path', 'url(#' + clipId + ')')
+                  .text(fullText);
+              } else if (durText.length * 7 <= barW - 12) {
+                rowsG.append('text')
+                  .attr('class', 'span-label')
+                  .attr('x', labelWidth + barX + 6)
+                  .attr('y', y + rowHeight / 2 - 5)
+                  .attr('clip-path', 'url(#' + clipId + ')')
+                  .text(durText);
+                if (s.toolCalls > 0) {
+                  rowsG.append('text')
+                    .attr('class', 'span-label')
+                    .attr('x', labelWidth + barX + 6)
+                    .attr('y', y + rowHeight / 2 + 7)
+                    .style('font-size', '9px')
+                    .style('fill', 'rgba(255,255,255,0.6)')
+                    .attr('clip-path', 'url(#' + clipId + ')')
+                    .text(s.toolCalls + ' tools');
+                }
+              } else {
+                rowsG.append('text')
+                  .attr('class', 'span-label')
+                  .attr('x', labelWidth + barX + 4)
+                  .attr('y', y + rowHeight / 2 - 5)
+                  .style('font-size', '9px')
+                  .attr('clip-path', 'url(#' + clipId + ')')
+                  .text(durText);
+                if (s.toolCalls > 0) {
+                  rowsG.append('text')
+                    .attr('class', 'span-label')
+                    .attr('x', labelWidth + barX + 4)
+                    .attr('y', y + rowHeight / 2 + 7)
+                    .style('font-size', '8px')
+                    .style('fill', 'rgba(255,255,255,0.5)')
+                    .attr('clip-path', 'url(#' + clipId + ')')
+                    .text(s.toolCalls + ' tools');
+                }
+              }
+            } else {
+              // Bar too narrow for in-bar text — show outside (after bar end)
+              var outsideText = durText;
+              if (gapToNext > 120) outsideText += toolText;
+              if (gapToNext > 40) {
+                // Clip outside text to available gap so it never overlaps next bar
+                var outsideClipId = 'oclip-' + sid.replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + (s.id || '').replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + s.row;
+                defs.append('clipPath').attr('id', outsideClipId)
+                  .append('rect')
+                  .attr('x', labelWidth + barX + barW)
+                  .attr('y', y)
+                  .attr('width', Math.min(gapToNext, 200))
+                  .attr('height', rowHeight);
+                rowsG.append('text')
+                  .attr('class', 'span-duration')
+                  .attr('x', labelWidth + barX + barW + 4)
+                  .attr('y', y + rowHeight / 2)
+                  .attr('clip-path', 'url(#' + outsideClipId + ')')
+                  .text(outsideText);
+              } else if (gapToNext > 8) {
+                // Very tight gap — show abbreviated text clipped to gap
+                var tightClipId = 'tclip-' + sid.replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + (s.id || '').replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + s.row;
+                defs.append('clipPath').attr('id', tightClipId)
+                  .append('rect')
+                  .attr('x', labelWidth + barX + barW)
+                  .attr('y', y)
+                  .attr('width', gapToNext - 2)
+                  .attr('height', rowHeight);
+                rowsG.append('text')
+                  .attr('class', 'span-duration')
+                  .attr('x', labelWidth + barX + barW + 3)
+                  .attr('y', y + rowHeight / 2)
+                  .style('font-size', '9px')
+                  .attr('clip-path', 'url(#' + tightClipId + ')')
+                  .text(durText);
+              } else {
+                // No space right — show inside with clip (at least partial)
+                rowsG.append('text')
+                  .attr('class', 'span-label')
+                  .attr('x', labelWidth + barX + 3)
+                  .attr('y', y + rowHeight / 2)
+                  .style('font-size', '9px')
+                  .attr('clip-path', 'url(#' + clipId + ')')
+                  .text(durText);
+              }
+            }
+
+            // Worker toggle indicator per agent (including resumes that have workers)
+            var wList = workersByAgentId[s.id];
+            var wCount = wList ? wList.length : 0;
+            // Also check if this resume's task_uuid has workers
+            if (wCount === 0 && s.taskUuid) {
+              // Workers might be keyed by taskUuid through parent_id
+              workers.forEach(function(w) {
+                if (w.parentId === 'task:' + s.taskUuid) {
+                  if (!workersByAgentId[s.id]) workersByAgentId[s.id] = [];
+                  workersByAgentId[s.id].push(w);
+                  w._parentAgentId = s.id;
+                }
+              });
+              wList = workersByAgentId[s.id];
+              wCount = wList ? wList.length : 0;
+            }
+            // Only show worker indicator on the last span in this row
+            // (i.e., skip if there's a later resume on the same row)
+            var isLastInRow = !agents.some(function(a) {
+              return a.row === s.row && a.start > s.start;
+            });
+            if (wCount > 0 && isLastInRow) {
+              var durationTextW = (s.end && barW <= 60) ? 80 : 0;
+              var indicatorX = labelWidth + barX + barW + 4 + durationTextW + 8;
+              var indicator = rowsG.append('text')
+                .attr('x', indicatorX)
+                .attr('y', y + rowHeight / 2)
+                .attr('fill', '#a882ff')
+                .attr('font-size', '10px')
+                .attr('font-family', 'var(--mono)')
+                .attr('dominant-baseline', 'central')
+                .style('cursor', 'pointer')
+                .text('[' + wCount + ' worker' + (wCount > 1 ? 's' : '') + ']');
+              (function(agentId) {
+                indicator.on('click', function() { toggleWorkers(agentId); });
+              })(s.id);
+            }
+
+            // Tooltip
+            (function(span, wc) {
+              bar.on('mouseover', function(event) {
+                var lines = [
+                  span.agentType + (span.isResume ? ' (resumed)' : ' (fresh)'),
+                  'ID: ' + span.id.slice(0, 12) + '...',
+                  'Start: ' + fmtTime(new Date(span.start).toISOString()),
+                ];
+                if (span.end) {
+                  lines.push('End: ' + fmtTime(new Date(span.end).toISOString()));
+                  lines.push('Duration: ' + fmtDuration((span.end - span.start) / 1000));
+                } else {
+                  lines.push('Status: running');
+                }
+                lines.push('Workers: ' + wc);
+                if (span.taskUuid) lines.push('Task: ' + span.taskUuid.slice(0, 16) + '...');
+                tooltip.style('display', 'block').html(lines.join('\n'));
+              })
+              .on('mousemove', function(event) {
+                tooltip
+                  .style('left', (event.offsetX + 12) + 'px')
+                  .style('top', (event.offsetY - 10) + 'px');
+              })
+              .on('mouseout', function() {
+                tooltip.style('display', 'none');
+              });
+            })(s, wCount);
+          });
+
+          // No grayed stats — tool counts shown per bar via tooltip and worker indicators
+        });
+      }
+
+      // --- Worker expansion ---
+
+      function toggleWorkers(agentId) {
+        if (expandedState[agentId]) {
+          collapseWorkers(agentId);
+        } else {
+          expandWorkers(agentId);
+        }
+      }
+
+      function expandWorkers(agentId) {
+        var wList = workersByAgentId[agentId];
+        if (!wList || wList.length === 0) return;
+
+        wList.sort(function(a, b) { return a.start - b.start; });
+
+        // Find the agent's row to insert workers after
+        var agentRow = rowByAgentId[agentId];
+        if (agentRow == null) return;
+
+        var wCount = wList.length;
+
+        // Insert workers directly below their parent agent row.
+        // Shift all rows below agentRow down by wCount.
+        var shiftAmount = wCount;
+        agents.forEach(function(a) {
+          if (a.row > agentRow) a.row += shiftAmount;
+        });
+        // Also shift previously expanded workers that are below
+        Object.keys(expandedState).forEach(function(aid) {
+          var info = expandedState[aid];
+          info.workers.forEach(function(w) {
+            if (w._expandedRow > agentRow) w._expandedRow += shiftAmount;
+          });
+        });
+        // Update type first rows
+        typeOrder.forEach(function(aType) {
+          if (typeFirstRow[aType] > agentRow) typeFirstRow[aType] += shiftAmount;
+        });
+        // Update rowByAgentId
+        agents.forEach(function(a) { rowByAgentId[a.id] = a.row; });
+        agentRowCount += shiftAmount;
+
+        var workerStartRow = agentRow + 1;
+
+        // Assign rows to workers
+        wList.forEach(function(w, idx) {
+          w._expandedRow = workerStartRow + idx;
+        });
+
+        expandedState[agentId] = {
+          count: wCount,
+          workers: wList,
+          startRow: workerStartRow
+        };
+
+        // Full redraw since rows shifted
+        fullRedraw();
+      }
+
+      function collapseWorkers(agentId) {
+        if (!expandedState[agentId]) return;
+        var info = expandedState[agentId];
+        var shiftAmount = info.count;
+        var agentRow = rowByAgentId[agentId];
+
+        // Shift rows back up
+        agents.forEach(function(a) {
+          if (a.row > agentRow + shiftAmount) a.row -= shiftAmount;
+        });
+        Object.keys(expandedState).forEach(function(aid) {
+          if (aid === agentId) return;
+          var inf = expandedState[aid];
+          inf.workers.forEach(function(w) {
+            if (w._expandedRow > agentRow + shiftAmount) w._expandedRow -= shiftAmount;
+          });
+        });
+        typeOrder.forEach(function(aType) {
+          if (typeFirstRow[aType] > agentRow + shiftAmount) typeFirstRow[aType] -= shiftAmount;
+        });
+        agents.forEach(function(a) { rowByAgentId[a.id] = a.row; });
+        agentRowCount -= shiftAmount;
+
+        delete expandedState[agentId];
+        fullRedraw();
+      }
+
+      function fullRedraw() {
+        var totalRows = agentRowCount;
+        // Count expanded worker rows
+        Object.keys(expandedState).forEach(function(aid) {
+          // workers are already counted in agentRowCount via the shift
+        });
+        var newHeight = topMargin + totalRows * rowHeight + bottomMargin;
+        svg.attr('height', newHeight);
+
+        axisG.selectAll('*').remove();
+        arrowG.selectAll('*').remove();
+        rowsG.selectAll('*').remove();
+
+        drawAxisTicks(totalRows);
+        drawSessionBar();
+        drawArrows();
+        drawAgentBars();
+
+        // Redraw expanded workers
+        Object.keys(expandedState).forEach(function(aid) {
+          var info = expandedState[aid];
+          var parentRow = rowByAgentId[aid];
+          var safeId = aid.replace(/[^a-zA-Z0-9]/g, '_');
+          var wg = rowsG.append('g').attr('class', 'worker-group-' + safeId);
+
+          info.workers.forEach(function(w, idx) {
+            w._expandedRow = info.startRow + idx;
+            var y = w._expandedRow * rowHeight;
+            var color = agentHex(w.agentType);
+
+            wg.append('text')
+              .attr('class', 'row-label')
+              .attr('x', 20)
+              .attr('y', y + rowHeight / 2)
+              .attr('fill', 'rgba(255,255,255,0.45)')
+              .attr('font-size', '10px')
+              .text('\u2514 ' + (w.agentType || 'worker'));
+
+            var barX = xScale(w.start);
+            var barEnd = w.end ? xScale(w.end) : xScale(w.start) + 8;
+            var barW = Math.max(4, barEnd - barX);
+
+            wg.append('rect')
+              .attr('class', 'span-bar')
+              .attr('x', labelWidth + barX)
+              .attr('y', y + 6)
+              .attr('width', barW)
+              .attr('height', rowHeight - 12)
+              .attr('fill', color)
+              .attr('opacity', 0.6)
+              .attr('rx', 2);
+
+            if (w.end) {
+              wg.append('text')
+                .attr('class', 'span-duration')
+                .attr('x', labelWidth + barX + barW + 4)
+                .attr('y', y + rowHeight / 2)
+                .attr('font-size', '10px')
+                .text(fmtDuration((w.end - w.start) / 1000));
+            }
+
+            // Arrow from parent to worker
+            var parentY = parentRow * rowHeight + rowHeight - 4;
+            var workerY = y + rowHeight / 2;
+            arrowG.append('path')
+              .attr('class', 'arrow-line')
+              .attr('d', 'M' + barX + ',' + parentY +
+                ' L' + barX + ',' + workerY)
+              .attr('marker-end', 'url(#trace-arrow-' + sid + ')')
+              .attr('opacity', 0.5);
+          });
+        });
+      }
+
+      // --- Initial render ---
+      drawSessionBar();
+      drawArrows();
+      drawAgentBars();
+    }
+
+    function formatTraceTime(ms, baseMs) {
+      var relative = (ms - baseMs) / 1000;
+      if (relative < 60) return '+' + relative.toFixed(0) + 's';
+      if (relative < 3600) return '+' + (relative / 60).toFixed(1) + 'm';
+      return '+' + (relative / 3600).toFixed(1) + 'h';
+    }
+
+    function shiftColor(hexColor, index) {
+      // Darken/lighten for same-type variants
+      try {
+        var r = parseInt(hexColor.slice(1,3), 16);
+        var g = parseInt(hexColor.slice(3,5), 16);
+        var b = parseInt(hexColor.slice(5,7), 16);
+        var shift = (index % 2 === 0) ? -30 * ((index + 2) / 2) : 30 * ((index + 1) / 2);
+        r = Math.max(0, Math.min(255, r + shift));
+        g = Math.max(0, Math.min(255, g + shift));
+        b = Math.max(0, Math.min(255, b + shift));
+        return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+      } catch(e) {
+        return hexColor;
+      }
+    }
+
+    // ===== Tree View (improved) =====
+    function renderTreeView(treeData) {
+      return '<div class="tree">' + renderNode(treeData) + '</div>';
+    }
+
+    function renderNode(node) {
+      // Skip event nodes
+      if (node.type === 'event') return '';
+
+      var color = agentColor(node.agent_type);
+      var badgeClass = 'badge-' + color;
+      var icon = '';
+      var label = '';
+
+      if (node.type === 'session') {
+        badgeClass = 'badge-session';
+        icon = 'S';
+        label = 'Session';
+      } else if (node.type === 'agent') {
+        icon = 'A';
+        label = esc(node.agent_type || 'agent');
+      } else if (node.type === 'worker') {
+        badgeClass = node.agent_type ? 'badge-' + color : 'badge-worker';
+        icon = 'W';
+        label = esc(node.agent_type || 'worker');
+      }
+
+      var parts = [];
+      if (node.duration_seconds != null) parts.push(fmtDuration(node.duration_seconds));
+      if (node.children) {
+        var wc = node.children.filter(function(c) { return c.type === 'worker'; }).length;
+        if (wc) parts.push(wc + ' workers');
+      }
+      var meta = parts.join(' / ');
+
+      // Show tools dict as compact inline: "Bash:2 Edit:1 Read:3"
+      var toolsInline = toolSummaryInline(node.tools);
+      var toolsHtml = toolsInline ? '<span class="node-tools-inline">' + esc(toolsInline) + '</span>' : '';
+
+      // Filter out event children
+      var validChildren = (node.children || []).filter(function(c) { return c.type !== 'event'; });
+      var childrenHtml = validChildren.map(function(c) { return renderNode(c); }).join('');
+      var hasChildren = validChildren.length > 0;
+
+      if (!hasChildren) {
+        return '<div style="padding:3px 8px;font-size:12px;font-family:var(--mono);display:flex;align-items:center;gap:6px;">' +
+          '<span class="badge ' + badgeClass + '">' + icon + '</span>' +
+          '<span class="node-label">' + label + '</span>' +
+          toolsHtml +
+          (meta ? '<span class="node-meta">' + esc(meta) + '</span>' : '') +
+        '</div>';
+      }
+
+      return '<details>' +
+        '<summary>' +
+          '<span class="badge ' + badgeClass + '">' + icon + '</span>' +
+          '<span class="node-label">' + label + '</span>' +
+          toolsHtml +
+          (meta ? '<span class="node-meta">' + esc(meta) + '</span>' : '') +
+        '</summary>' +
+        childrenHtml +
+      '</details>';
+    }
+
+    // ===== Expand/Collapse controls =====
+    function expandAllSessions() {
+      document.querySelectorAll('.session-card').forEach(function(card) {
+        if (!card.classList.contains('expanded')) {
+          var head = card.querySelector('.session-head');
+          if (head) toggleSession(head);
+        }
+      });
+    }
+
+    function collapseAllSessions() {
+      document.querySelectorAll('.session-card.expanded').forEach(function(card) {
+        var sid = card.dataset.sid;
+        card.classList.remove('expanded');
+        if (cytoscapeInstances[sid]) {
+          cytoscapeInstances[sid].destroy();
+          delete cytoscapeInstances[sid];
+        }
+      });
+    }
+
+    // ===== Stats =====
+    var statsViewMode = 'absolute'; // 'absolute' or 'percentage'
+    var globalToolData = null; // cached /api/stats/tools response
+    var expandedAgentType = null; // currently expanded agent type in stats
+
+    async function loadStats() {
+      var el = document.getElementById('stats-content');
+      try {
+        var results = await Promise.all([
+          fetch('/api/stats').then(function(r) { return r.json(); }),
+          fetch('/api/stats/tools').then(function(r) { return r.json(); })
+        ]);
+        var statsData = results[0];
+        globalToolData = results[1];
+        renderStats(statsData, el);
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load statistics</div>';
+      }
+    }
+
+    function renderStats(data, el) {
+      if (!data.totals) {
+        el.innerHTML = '<div class="empty-state">No data available</div>';
+        return;
+      }
+
+      var t = data.totals;
+      var html = '<div class="stats-grid">';
+      var cards = [
+        { v: t.sessions, l: 'Sessions' },
+        { v: t.events, l: 'Events' },
+        { v: t.agents, l: 'Agents' },
+        { v: t.workers, l: 'Workers' },
+        { v: t.tool_calls, l: 'Tool Calls' },
+      ];
+      cards.forEach(function(c) {
+        html += '<div class="stat-card"><div class="value">' + c.v + '</div><div class="label">' + c.l + '</div></div>';
+      });
+      html += '</div>';
+
+      // Agent type breakdown with toggle and clickable bars
+      if (data.by_agent_type && Object.keys(data.by_agent_type).length) {
+        var totalAgents = Object.values(data.by_agent_type).reduce(function(s, v) { return s + v; }, 0);
+        var maxVal = Math.max.apply(null, Object.values(data.by_agent_type));
+
+        html += '<div class="stats-section"><h3>Agent Types</h3>';
+        html += '<div class="stats-toggle">';
+        html += '<button class="stats-toggle-btn' + (statsViewMode === 'absolute' ? ' active' : '') + '" onclick="setStatsViewMode(\'absolute\')">Counts</button>';
+        html += '<button class="stats-toggle-btn' + (statsViewMode === 'percentage' ? ' active' : '') + '" onclick="setStatsViewMode(\'percentage\')">Percentage</button>';
+        html += '</div>';
+
+        var sortedTypes = Object.entries(data.by_agent_type).sort(function(a, b) { return b[1] - a[1]; });
+        sortedTypes.forEach(function(entry) {
+          var type = entry[0], count = entry[1];
+          var pct = maxVal > 0 ? (count / maxVal * 100) : 0;
+          var pctOfTotal = totalAgents > 0 ? (count / totalAgents * 100).toFixed(1) : '0.0';
+          var color = 'var(--' + agentColor(type) + ')';
+          var displayCount = statsViewMode === 'percentage' ? pctOfTotal + '%' : count;
+          var barWidth = statsViewMode === 'percentage' ? (count / totalAgents * 100) : pct;
+
+          html += '<div class="bar-row" onclick="toggleAgentDetail(\'' + esc(type) + '\')" title="Click for details">' +
+            '<span class="bar-label">' + esc(type) + '</span>' +
+            '<div class="bar-track"><div class="bar-fill" style="width:' + barWidth + '%;background:' + color + '"></div></div>' +
+            '<span class="bar-count">' + displayCount + '</span>' +
+          '</div>';
+
+          // Agent detail panel (expanded)
+          if (expandedAgentType === type) {
+            html += renderAgentDetailPanel(type);
+          }
+        });
+        html += '</div>';
+      }
+
+      // Tool usage section (from /api/stats/tools — single call)
+      html += renderGlobalToolUsage();
+
+      // Path frequencies
+      if (data.path_frequencies && data.path_frequencies.length) {
+        html += '<div class="stats-section"><h3>Agent Flow Patterns</h3><ul class="path-list">';
+        data.path_frequencies.slice(0, 20).forEach(function(pf) {
+          var flowHtml = pf.path.map(function(p) {
+            return '<span style="color:var(--' + agentColor(p) + ')">' + esc(p) + '</span>';
+          }).join('<span class="arrow"> &rarr; </span>');
+          html += '<li class="path-item"><span class="path-flow">' + flowHtml + '</span><span class="path-count">' + pf.count + '</span></li>';
+        });
+        html += '</ul></div>';
+      }
+
+      // Timeline
+      if (data.timeline && data.timeline.length) {
+        var maxCount = Math.max.apply(null, data.timeline.map(function(t) { return t.count; }));
+        html += '<div class="stats-section"><h3>Timeline (hourly)</h3><div class="timeline-chart">';
+        data.timeline.forEach(function(t) {
+          var pct = maxCount > 0 ? (t.count / maxCount * 100) : 0;
+          var label = fmtTimelineLabel(t.hour);
+          html += '<div class="timeline-bar-wrap">' +
+            '<div class="timeline-count">' + t.count + '</div>' +
+            '<div class="timeline-bar" style="height:' + Math.max(pct, 3) + '%"></div>' +
+            '<div class="timeline-label">' + esc(label) + '</div>' +
+          '</div>';
+        });
+        html += '</div></div>';
+      }
+
+      // Averages
+      if (data.averages) {
+        html += '<div class="stats-section"><h3>Averages</h3><div class="avg-grid">';
+        html += '<div class="avg-item"><div class="value">' + fmtDuration(data.averages.session_duration) + '</div><div class="label">Avg Session Duration</div></div>';
+        html += '<div class="avg-item"><div class="value">' + (data.averages.agents_per_session || 0).toFixed(1) + '</div><div class="label">Agents / Session</div></div>';
+        html += '</div></div>';
+      }
+
+      el.innerHTML = html;
+    }
+
+    function setStatsViewMode(mode) {
+      statsViewMode = mode;
+      loadStats();
+    }
+
+    function toggleAgentDetail(type) {
+      expandedAgentType = expandedAgentType === type ? null : type;
+      loadStats();
+    }
+
+    function renderAgentDetailPanel(type) {
+      if (!globalToolData) return '';
+
+      var agentTypes = globalToolData.agent_types || {};
+      var toolsForAgent = agentTypes[type] || {};
+      var sorted = Object.entries(toolsForAgent).sort(function(a, b) { return b[1] - a[1]; });
+      var totalTools = sorted.reduce(function(s, e) { return s + e[1]; }, 0);
+
+      // Count sessions using this agent type
+      var sessionCount = 0;
+      sessionsCache.forEach(function(s) {
+        if (s.agent_types && s.agent_types.indexOf(type) !== -1) sessionCount++;
+      });
+
+      var html = '<div class="agent-detail-panel">';
+      html += '<h4>' + esc(type) + ' Details</h4>';
+      html += '<div class="agent-detail-row"><span class="dl">Sessions using this type</span><span class="dv">' + sessionCount + '</span></div>';
+      html += '<div class="agent-detail-row"><span class="dl">Total tool calls</span><span class="dv">' + totalTools + '</span></div>';
+
+      if (sorted.length > 0) {
+        // Mini stacked bar
+        html += '<div style="margin:8px 0 4px 0;">';
+        html += '<div class="tool-usage-bar" style="height:20px;">';
+        sorted.forEach(function(entry) {
+          var pct = totalTools > 0 ? (entry[1] / totalTools * 100) : 0;
+          html += '<div class="tool-usage-segment" style="width:' + pct + '%;background:' + getToolColor(entry[0]) + '" title="' + esc(entry[0]) + ': ' + entry[1] + '"></div>';
+        });
+        html += '</div></div>';
+
+        // Tool table
+        html += '<table class="tool-stats-table">';
+        html += '<thead><tr><th>Tool</th><th>Calls</th><th>%</th></tr></thead><tbody>';
+        sorted.forEach(function(entry) {
+          var pct = totalTools > 0 ? (entry[1] / totalTools * 100).toFixed(1) : '0.0';
+          html += '<tr>';
+          html += '<td><span class="tool-color-dot" style="background:' + getToolColor(entry[0]) + ';display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle;"></span>' + esc(entry[0]) + '</td>';
+          html += '<td>' + entry[1] + '</td>';
+          html += '<td>' + pct + '%</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+      } else {
+        html += '<div style="color:var(--text-dim);font-size:11px;margin-top:6px;">No tool data for this agent type</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    // ===== Tool Usage Statistics Section (single /api/stats/tools call) =====
+    function renderGlobalToolUsage() {
+      if (!globalToolData) return '';
+
+      var totals = globalToolData.totals || {};
+      var agentTypes = globalToolData.agent_types || {};
+      var sorted = Object.entries(totals)
+        .filter(function(e) { return e[0] !== 'supercharge'; })
+        .sort(function(a, b) { return b[1] - a[1]; });
+
+      if (sorted.length === 0) return '';
+
+      var total = sorted.reduce(function(s, e) { return s + e[1]; }, 0);
+      var superchargeCount = totals.supercharge || 0;
+
+      var html = '<div class="stats-section"><h3>Tool Usage</h3>';
+
+      // Supercharge highlight
+      if (superchargeCount > 0) {
+        html += '<div style="margin-bottom:10px;font-size:11px;">';
+        html += '<span class="supercharge-highlight">supercharge</span> bash calls: <b style="color:var(--text-bright)">' + superchargeCount + '</b>';
+        html += '</div>';
+      }
+
+      // Stacked bar
+      html += '<div class="tool-usage-bar">';
+      sorted.forEach(function(entry) {
+        var pct = total > 0 ? (entry[1] / total * 100) : 0;
+        var label = pct > 5 ? entry[0] : '';
+        html += '<div class="tool-usage-segment" style="width:' + pct + '%;background:' + getToolColor(entry[0]) + '" title="' + esc(entry[0]) + ': ' + entry[1] + '">' + esc(label) + '</div>';
+      });
+      html += '</div>';
+
+      // Table
+      html += '<table class="tool-stats-table">';
+      html += '<thead><tr><th>Tool</th><th>Calls</th><th>%</th></tr></thead><tbody>';
+      sorted.forEach(function(entry) {
+        var pct = total > 0 ? (entry[1] / total * 100).toFixed(1) : '0.0';
+        html += '<tr>';
+        html += '<td><span class="tool-color-dot" style="background:' + getToolColor(entry[0]) + ';display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle;"></span>' + esc(entry[0]) + '</td>';
+        html += '<td>' + entry[1] + '</td>';
+        html += '<td>' + pct + '%</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+
+      // Per-agent-type grouped bars
+      var agentTypeKeys = Object.keys(agentTypes);
+      if (agentTypeKeys.length > 0) {
+        // Collect all tool names across agents
+        var allTools = {};
+        agentTypeKeys.forEach(function(at) {
+          Object.keys(agentTypes[at]).forEach(function(t) { allTools[t] = true; });
+        });
+        var toolNames = Object.keys(allTools).sort();
+
+        html += '<h4 style="font-size:11px;color:var(--text-bright);margin-top:16px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Tool Usage by Agent Type</h4>';
+        html += '<div class="agent-tool-grid">';
+
+        var maxAgentTotal = 0;
+        agentTypeKeys.forEach(function(at) {
+          var atTotal = Object.values(agentTypes[at]).reduce(function(s, v) { return s + v; }, 0);
+          if (atTotal > maxAgentTotal) maxAgentTotal = atTotal;
+        });
+
+        agentTypeKeys.sort(function(a, b) {
+          var aTotal = Object.values(agentTypes[a]).reduce(function(s, v) { return s + v; }, 0);
+          var bTotal = Object.values(agentTypes[b]).reduce(function(s, v) { return s + v; }, 0);
+          return bTotal - aTotal;
+        }).forEach(function(at) {
+          var atTools = agentTypes[at];
+          var atTotal = Object.values(atTools).reduce(function(s, v) { return s + v; }, 0);
+
+          html += '<div class="agent-tool-row">';
+          html += '<div class="agent-tool-row-label" style="color:var(--' + agentColor(at) + ')">' + esc(at) + '</div>';
+          html += '<div class="agent-tool-row-bar">';
+
+          var sortedAgentTools = Object.entries(atTools).sort(function(a, b) { return b[1] - a[1]; });
+          sortedAgentTools.forEach(function(entry) {
+            var pct = maxAgentTotal > 0 ? (entry[1] / maxAgentTotal * 100) : 0;
+            html += '<div class="agent-tool-row-segment" style="width:' + pct + '%;background:' + getToolColor(entry[0]) + '" title="' + esc(entry[0]) + ': ' + entry[1] + '"></div>';
+          });
+
+          html += '</div>';
+          html += '<span style="font-family:var(--mono);font-size:10px;color:var(--text-dim);min-width:35px;text-align:right;">' + atTotal + '</span>';
+          html += '</div>';
+        });
+
+        html += '</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    // ===== Browse =====
+    async function loadBrowse() {
+      var el = document.getElementById('browse-content');
+      try {
+        var resp = await fetch('/api/browse');
+        var data = await resp.json();
+        renderBrowse(data, el);
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load file tree</div>';
+      }
+    }
+
+    function renderBrowse(data, el) {
+      if (!data.tree) {
+        el.innerHTML = '<div class="empty-state">No SuperchargeAI directory found</div>';
+        return;
+      }
+
+      var taskMeta = {};
+      if (data.tasks) {
+        Object.entries(data.tasks).forEach(function(entry) {
+          entry[1].forEach(function(t) {
+            taskMeta[t.folder] = t;
+          });
+        });
+      }
+
+      var html = '<div class="browse-tree">';
+      html += renderBrowseNode(data.tree, taskMeta, true);
+      html += '</div>';
+      el.innerHTML = html;
+    }
+
+    function renderBrowseNode(node, taskMeta, isRoot) {
+      if (node.type === 'file') {
+        return '<div class="file-entry">' +
+          '<span class="file-icon">&#128196;</span>' +
+          '<span class="file-name">' + esc(node.name) + '</span>' +
+          '<span class="file-meta">' + fmtSize(node.size || 0) + '</span>' +
+        '</div>';
+      }
+
+      var meta = taskMeta[node.name];
+      var annotation = '';
+      if (meta) {
+        var color = agentColor(meta.agent_type);
+        annotation = ' <span class="task-badge badge-' + color + '">' + esc(meta.agent_type) + '</span>';
+        if (meta.created_at) {
+          annotation += ' <span class="file-meta">' + esc(fmtTime(meta.created_at)) + '</span>';
+        }
+      }
+
+      var children = (node.children || []).map(function(c) { return renderBrowseNode(c, taskMeta, false); }).join('');
+      var openAttr = isRoot ? ' open' : '';
+
+      return '<details' + openAttr + '>' +
+        '<summary>' +
+          '<span class="dir-icon">&#128193;</span> ' +
+          '<span class="file-name">' + esc(node.name) + '</span>' +
+          annotation +
+        '</summary>' +
+        children +
+      '</details>';
+    }
+
+    // ===== Global Unit Selector & Decomposition Bars =====
+    var globalUnit = 'time'; // 'time' | 'tokens' | 'tools'
+    var decompStack = []; // breadcrumb stack: [{level, label, data}]
+    var decompTokenCache = {}; // session_id -> token data
+    var decompSpansCache = {}; // session_id -> spans data
+
+    function setGlobalUnit(unit) {
+      globalUnit = unit;
+      document.querySelectorAll('.unit-btn').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.unit === unit);
+      });
+
+      var sessionList = document.getElementById('session-list');
+      var decompView = document.getElementById('decomp-view');
+      var expandBtn = document.getElementById('ctrl-expand');
+      var collapseBtn = document.getElementById('ctrl-collapse');
+
+      if (unit === 'time') {
+        sessionList.style.display = '';
+        decompView.style.display = 'none';
+        expandBtn.style.display = '';
+        collapseBtn.style.display = '';
+      } else {
+        sessionList.style.display = 'none';
+        decompView.style.display = '';
+        expandBtn.style.display = 'none';
+        collapseBtn.style.display = 'none';
+        decompStack = [];
+        renderDecompSessionLevel();
+      }
+    }
+
+    function decompSessionValue(s) {
+      if (globalUnit === 'tokens') {
+        return (s.input_tokens || 0) + (s.output_tokens || 0) +
+               (s.cache_creation_tokens || 0) + (s.cache_read_tokens || 0);
+      }
+      return s.tool_call_count || 0;
+    }
+
+    function decompFormatValue(val) {
+      if (globalUnit === 'tokens') return fmtTokens(val) + ' tokens';
+      return val + ' tools';
+    }
+
+    function decompUnitLabel() {
+      return globalUnit === 'tokens' ? 'Total Tokens' : 'Total Tool Calls';
+    }
+
+    // Level 0: All sessions as bars
+    function renderDecompSessionLevel() {
+      var el = document.getElementById('decomp-view');
+      if (!sessionsCache || sessionsCache.length === 0) {
+        el.innerHTML = '<div class="empty-state">No sessions recorded yet</div>';
+        return;
+      }
+
+      var sorted = sessionsCache.slice().sort(function(a, b) {
+        return decompSessionValue(b) - decompSessionValue(a);
+      });
+
+      var maxVal = sorted.length > 0 ? decompSessionValue(sorted[0]) : 1;
+      if (maxVal === 0) maxVal = 1;
+
+      var totalVal = sorted.reduce(function(s, sess) { return s + decompSessionValue(sess); }, 0);
+
+      decompStack = [{ level: 'sessions', label: 'All Sessions' }];
+
+      var html = renderDecompBreadcrumb();
+      html += '<div class="decomp-total-label">' + decompUnitLabel() + ': <b>' + decompFormatValue(totalVal) + '</b></div>';
+      html += '<div class="decomp-bars">';
+
+      sorted.forEach(function(s) {
+        var val = decompSessionValue(s);
+        var pct = maxVal > 0 ? (val / maxVal * 100) : 0;
+        var name = s.name || truncId(s.session_id, 30);
+        html += '<div class="decomp-bar-row" data-sid="' + esc(s.session_id) + '" onclick="decompToggleSession(this, \'' + esc(s.session_id) + '\')">';
+        html += '<div class="decomp-bar-label" title="' + esc(s.session_id) + '">' + esc(name) + '</div>';
+        html += '<div class="decomp-bar-track"><div class="decomp-bar-fill" style="width:' + pct + '%;background:#7950f2;">' + (pct > 15 ? decompFormatValue(val) : '') + '</div></div>';
+        html += '<div class="decomp-bar-value">' + decompFormatValue(val) + '</div>';
+        html += '</div>';
+        // Placeholder for inline expansion
+        html += '<div class="decomp-children" id="decomp-children-' + esc(s.session_id) + '" style="display:none;margin-left:20px;"></div>';
+      });
+
+      html += '</div>';
+      el.innerHTML = html;
+    }
+
+    // Inline expand/collapse a session's children
+    async function decompToggleSession(rowEl, sessionId) {
+      var childDiv = document.getElementById('decomp-children-' + sessionId);
+      if (!childDiv) return;
+      // Ensure rowEl is the session bar row, not a child
+      var sessionRow = document.querySelector('.decomp-bar-row[data-sid="' + sessionId + '"]');
+      if (sessionRow) rowEl = sessionRow;
+
+      // Toggle - collapse
+      if (childDiv.style.display !== 'none') {
+        childDiv.style.display = 'none';
+        childDiv.innerHTML = '';
+        // Restore parent bar to original value
+        var ghost = rowEl.querySelector('.decomp-bar-ghost');
+        if (ghost) ghost.remove();
+        var parentFill = rowEl.querySelector('.decomp-bar-fill');
+        var parentValEl = rowEl.querySelector('.decomp-bar-value');
+        if (parentFill && parentFill.dataset.origWidth) {
+          parentFill.style.width = parentFill.dataset.origWidth;
+          parentFill.textContent = parentFill.dataset.origText || '';
+          if (parentValEl) parentValEl.textContent = parentValEl.dataset.origText || '';
+        }
+        return;
+      }
+
+      childDiv.style.display = 'block';
+      childDiv.innerHTML = '<div class="empty-state" style="font-size:11px">Loading...</div>';
+
+      try {
+        // Fetch data
+        if (!decompTokenCache[sessionId]) {
+          var tokResp = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/tokens');
+          decompTokenCache[sessionId] = await tokResp.json();
+        }
+        if (!decompSpansCache[sessionId]) {
+          var spResp = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/spans');
+          decompSpansCache[sessionId] = await spResp.json();
+        }
+
+        var tokenData = decompTokenCache[sessionId] || {};
+        var spans = decompSpansCache[sessionId] || [];
+
+        // Group by agent_type
+        var typeGroups = {};
+        if (globalUnit === 'tokens') {
+          Object.entries(tokenData).forEach(function(entry) {
+            var agentId = entry[0], info = entry[1];
+            var aType = info.agent_type || 'unknown';
+            if (!typeGroups[aType]) typeGroups[aType] = { value: 0, agents: [] };
+            typeGroups[aType].value += info.total || 0;
+            typeGroups[aType].agents.push({ id: agentId, value: info.total || 0, info: info });
+          });
+        } else {
+          spans.forEach(function(sp) {
+            if (sp.type !== 'agent') return;
+            var aType = sp.agent_type || 'unknown';
+            if (!typeGroups[aType]) typeGroups[aType] = { value: 0, agents: [] };
+            typeGroups[aType].value += sp.tool_calls || 0;
+            typeGroups[aType].agents.push({ id: sp.id, value: sp.tool_calls || 0, info: sp });
+          });
+        }
+
+        // Sort groups by value
+        var groups = Object.entries(typeGroups).sort(function(a, b) { return b[1].value - a[1].value; });
+        // Scale relative to SAME max as parent bars (max across all sessions)
+        var maxSessVal = sessionsCache.reduce(function(m, s) { var v = decompSessionValue(s); return v > m ? v : m; }, 1);
+        if (maxSessVal === 0) maxSessVal = 1;
+        var sessionObj = sessionsCache.find(function(s) { return s.session_id === sessionId; });
+        var sessionVal = sessionObj ? decompSessionValue(sessionObj) : 1;
+
+        var html = '';
+        groups.forEach(function(entry) {
+          var aType = entry[0], data = entry[1];
+          var pct = (data.value / maxSessVal * 100);
+          var color = agentHex(aType);
+          html += '<div class="decomp-bar-row" onclick="event.stopPropagation(); decompToggleAgentType(this, \'' + esc(sessionId) + '\', \'' + esc(aType) + '\')">';
+          html += '<div class="decomp-bar-label">' + esc(aType) + '</div>';
+          html += '<div class="decomp-bar-track"><div class="decomp-bar-fill" style="width:' + pct + '%;background:' + color + ';">' + (pct > 20 ? decompFormatValue(data.value) : '') + '</div></div>';
+          html += '<div class="decomp-bar-value">' + decompFormatValue(data.value) + '</div>';
+          html += '</div>';
+          html += '<div class="decomp-children" id="decomp-type-' + esc(sessionId) + '-' + esc(aType) + '" style="display:none;margin-left:20px;"></div>';
+        });
+
+        if (groups.length === 0) {
+          html = '<div class="empty-state" style="font-size:11px">No data for this unit</div>';
+        }
+
+        // Update parent bar: ghost background at original width, fill shrinks to unattributed
+        var childrenTotal = groups.reduce(function(s, entry) { return s + entry[1].value; }, 0);
+        var unattributed = Math.max(0, sessionVal - childrenTotal);
+        var parentFill = rowEl.querySelector('.decomp-bar-fill');
+        var parentTrack = rowEl.querySelector('.decomp-bar-track');
+        var parentValEl = rowEl.querySelector('.decomp-bar-value');
+        if (parentFill && parentTrack) {
+          // Save originals for restore on collapse
+          var origWidth = parentFill.style.width;
+          parentFill.dataset.origWidth = origWidth;
+          parentFill.dataset.origText = parentFill.textContent;
+          if (parentValEl) parentValEl.dataset.origText = parentValEl.textContent;
+          parentTrack.style.position = 'relative';
+          var ghost = document.createElement('div');
+          ghost.className = 'decomp-bar-ghost';
+          ghost.style.cssText = 'position:absolute;top:0;left:0;height:100%;width:' + origWidth + ';background:#7950f2;opacity:0.15;border-radius:4px;pointer-events:none;';
+          parentTrack.insertBefore(ghost, parentFill);
+          // Shrink fill to unattributed portion
+          var maxSessVal = sessionsCache.reduce(function(m, s) { var v = decompSessionValue(s); return v > m ? v : m; }, 1);
+          var unPct = maxSessVal > 0 ? (unattributed / maxSessVal * 100) : 0;
+          parentFill.style.width = unPct + '%';
+          parentFill.textContent = unattributed > 0 ? decompFormatValue(unattributed) : '';
+          if (parentValEl) parentValEl.textContent = unattributed > 0 ? decompFormatValue(unattributed) : '0';
+        }
+
+        // Unattributed remainder is already shown in the shrunken parent bar.
+        // No separate row needed — the parent bar IS the orchestrator.
+
+        childDiv.innerHTML = html;
+      } catch(e) {
+        childDiv.innerHTML = '<div class="empty-state" style="font-size:11px">Failed to load</div>';
+      }
+    }
+
+    // Inline expand agent type -> individual invocations
+    function decompToggleAgentType(rowEl, sessionId, agentType) {
+      var childDiv = document.getElementById('decomp-type-' + sessionId + '-' + agentType);
+      if (!childDiv) return;
+
+      if (childDiv.style.display !== 'none') {
+        childDiv.style.display = 'none';
+        childDiv.innerHTML = '';
+        // Restore parent bar
+        var ghost = rowEl.querySelector('.decomp-bar-ghost');
+        if (ghost) ghost.remove();
+        var pf = rowEl.querySelector('.decomp-bar-fill');
+        var pv = rowEl.querySelector('.decomp-bar-value');
+        if (pf && pf.dataset.origWidth) {
+          pf.style.width = pf.dataset.origWidth;
+          pf.textContent = pf.dataset.origText || '';
+          if (pv) pv.textContent = pv.dataset.origText || '';
+        }
+        return;
+      }
+
+      childDiv.style.display = 'block';
+      var tokenData = decompTokenCache[sessionId] || {};
+      var spans = decompSpansCache[sessionId] || [];
+
+      var invocations = [];
+      if (globalUnit === 'tokens') {
+        Object.entries(tokenData).forEach(function(entry) {
+          var agentId = entry[0], info = entry[1];
+          if ((info.agent_type || 'unknown') === agentType) {
+            // Find task_uuid from spans if available
+            var matchSpan = spans.find(function(sp) { return sp.id === agentId && sp.type === 'agent'; });
+            var taskUuid = matchSpan ? (matchSpan.task_uuid || '') : '';
+            invocations.push({ id: agentId, value: info.total || 0, taskUuid: taskUuid, startTs: matchSpan ? (matchSpan.start || '') : '' });
+          }
+        });
+      } else {
+        spans.forEach(function(sp) {
+          if (sp.type !== 'agent' || (sp.agent_type || 'unknown') !== agentType) return;
+          invocations.push({ id: sp.id, value: sp.tool_calls || 0, taskUuid: sp.task_uuid || '', isResume: sp.is_resume, startTs: sp.start || '' });
+        });
+      }
+
+      // Sort by start time (preserve chronological order for numbering)
+      invocations.sort(function(a, b) { return (a.startTs || '').localeCompare(b.startTs || ''); });
+      // Use same global scale as parent bars
+      var maxSessVal = sessionsCache.reduce(function(m, s) { var v = decompSessionValue(s); return v > m ? v : m; }, 1);
+      if (maxSessVal === 0) maxSessVal = 1;
+      var color = agentHex(agentType);
+
+      // Track seen agent IDs for numbering (same agent resumed = same number)
+      var agentIdToNum = {};
+      var nextNum = 1;
+
+      var html = '';
+      invocations.forEach(function(inv, idx) {
+        var pct = (inv.value / maxSessVal * 100);
+        // Number agents: same agent_id = same #, different = new #
+        var num;
+        if (agentIdToNum[inv.id] !== undefined) {
+          num = agentIdToNum[inv.id];
+        } else {
+          num = nextNum++;
+          agentIdToNum[inv.id] = num;
+        }
+        var label = '#' + num + (inv.isResume ? ' (cont.)' : '');
+        // View task icon (📄) separate from expand
+        var viewBtn = '';
+        if (inv.taskUuid) {
+          viewBtn = '<span class="decomp-view-btn" onclick="event.stopPropagation(); showTaskOverlay(\'' + esc(inv.taskUuid) + '\')" title="View task">&#128196;</span>';
+        } else {
+          viewBtn = '<span class="decomp-view-btn" onclick="event.stopPropagation(); searchAndShowTask(\'\', \'' + esc(agentType) + '\', 0)" title="View task">&#128196;</span>';
+        }
+        html += '<div class="decomp-bar-row">';
+        html += '<div class="decomp-bar-label">' + esc(label) + ' ' + viewBtn + '</div>';
+        html += '<div class="decomp-bar-track"><div class="decomp-bar-fill" style="width:' + pct + '%;background:' + shiftColor(color, idx) + ';">' + (pct > 20 ? decompFormatValue(inv.value) : '') + '</div></div>';
+        html += '<div class="decomp-bar-value">' + decompFormatValue(inv.value) + '</div>';
+        html += '</div>';
+      });
+
+      // Ghost bar on parent agent type row
+      var parentFill = rowEl.querySelector('.decomp-bar-fill');
+      var parentTrack = rowEl.querySelector('.decomp-bar-track');
+      var parentValEl = rowEl.querySelector('.decomp-bar-value');
+      if (parentFill && parentTrack) {
+        parentFill.dataset.origWidth = parentFill.style.width;
+        parentFill.dataset.origText = parentFill.textContent;
+        if (parentValEl) parentValEl.dataset.origText = parentValEl.textContent;
+        parentTrack.style.position = 'relative';
+        var ghost = document.createElement('div');
+        ghost.className = 'decomp-bar-ghost';
+        ghost.style.cssText = 'position:absolute;top:0;left:0;height:100%;width:' + parentFill.style.width + ';background:' + color + ';opacity:0.15;border-radius:4px;pointer-events:none;';
+        parentTrack.insertBefore(ghost, parentFill);
+        // Show just the label, no filled bar (children explain the breakdown)
+        parentFill.style.width = '0%';
+        parentFill.textContent = '';
+        if (parentValEl) parentValEl.textContent = '';
+      }
+
+      childDiv.innerHTML = html || '<div class="empty-state" style="font-size:11px">No invocations</div>';
+    }
+
+    // Level 1: Drill into a session -> agent type groups (legacy, kept for breadcrumb nav)
+    async function decompDrillSession(sessionId) {
+      var el = document.getElementById('decomp-view');
+      el.innerHTML = '<div class="empty-state">Loading...</div>';
+
+      var session = sessionsCache.find(function(s) { return s.session_id === sessionId; });
+      var sessionName = session ? (session.name || truncId(sessionId, 30)) : truncId(sessionId, 30);
+
+      try {
+        // Fetch token data and spans in parallel
+        var promises = [];
+        if (!decompTokenCache[sessionId]) {
+          promises.push(
+            fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/tokens')
+              .then(function(r) { return r.json(); })
+              .then(function(d) { decompTokenCache[sessionId] = d; })
+          );
+        }
+        if (!decompSpansCache[sessionId]) {
+          promises.push(
+            fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/spans')
+              .then(function(r) { return r.json(); })
+              .then(function(d) { decompSpansCache[sessionId] = d; })
+          );
+        }
+        if (promises.length) await Promise.all(promises);
+
+        var tokenData = decompTokenCache[sessionId] || {};
+        var spans = decompSpansCache[sessionId] || [];
+
+        // Group by agent_type
+        var typeGroups = {};
+        if (globalUnit === 'tokens') {
+          Object.entries(tokenData).forEach(function(entry) {
+            var agentId = entry[0], info = entry[1];
+            var aType = info.agent_type || 'unknown';
+            if (!typeGroups[aType]) typeGroups[aType] = { value: 0, agents: {} };
+            typeGroups[aType].value += info.total || 0;
+            typeGroups[aType].agents[agentId] = info;
+          });
+        } else {
+          // Tools: group spans by agent_type
+          spans.forEach(function(sp) {
+            if (sp.type !== 'agent') return;
+            var aType = sp.agent_type || 'unknown';
+            if (!typeGroups[aType]) typeGroups[aType] = { value: 0, agents: {} };
+            var tc = sp.tool_calls || 0;
+            typeGroups[aType].value += tc;
+            if (!typeGroups[aType].agents[sp.id]) {
+              typeGroups[aType].agents[sp.id] = { tool_calls: 0, agent_type: aType };
+            }
+            typeGroups[aType].agents[sp.id].tool_calls += tc;
+          });
+        }
+
+        var sorted = Object.entries(typeGroups).sort(function(a, b) { return b[1].value - a[1].value; });
+        var maxVal = sorted.length > 0 ? sorted[0][1].value : 1;
+        if (maxVal === 0) maxVal = 1;
+        var totalVal = sorted.reduce(function(s, e) { return s + e[1].value; }, 0);
+
+        decompStack = [
+          { level: 'sessions', label: 'All Sessions' },
+          { level: 'session', label: sessionName, sessionId: sessionId }
+        ];
+
+        var html = renderDecompBreadcrumb();
+        html += '<div class="decomp-total-label">' + esc(sessionName) + ' - ' + decompUnitLabel() + ': <b>' + decompFormatValue(totalVal) + '</b></div>';
+        html += '<div class="decomp-bars">';
+
+        sorted.forEach(function(entry) {
+          var aType = entry[0], info = entry[1];
+          var pct = maxVal > 0 ? (info.value / maxVal * 100) : 0;
+          var color = agentHex(aType);
+          html += '<div class="decomp-bar-row" onclick="decompDrillAgentType(\'' + esc(sessionId) + '\', \'' + esc(aType) + '\')">';
+          html += '<div class="decomp-bar-label">' + esc(aType) + '</div>';
+          html += '<div class="decomp-bar-track"><div class="decomp-bar-fill" style="width:' + pct + '%;background:' + color + ';">' + (pct > 15 ? decompFormatValue(info.value) : '') + '</div></div>';
+          html += '<div class="decomp-bar-value">' + decompFormatValue(info.value) + '</div>';
+          html += '</div>';
+        });
+
+        html += '</div>';
+        el.innerHTML = html;
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load data</div>';
+      }
+    }
+
+    // Level 2: Drill into agent type -> individual invocations
+    function decompDrillAgentType(sessionId, agentType) {
+      var el = document.getElementById('decomp-view');
+      var tokenData = decompTokenCache[sessionId] || {};
+      var spans = decompSpansCache[sessionId] || [];
+      var session = sessionsCache.find(function(s) { return s.session_id === sessionId; });
+      var sessionName = session ? (session.name || truncId(sessionId, 30)) : truncId(sessionId, 30);
+
+      // Collect individual invocations for this agent type
+      var invocations = [];
+      if (globalUnit === 'tokens') {
+        Object.entries(tokenData).forEach(function(entry) {
+          var agentId = entry[0], info = entry[1];
+          if ((info.agent_type || 'unknown') !== agentType) return;
+          var matchSpan = spans.find(function(sp) { return sp.id === agentId && sp.type === 'agent'; });
+          var taskUuid = matchSpan ? (matchSpan.task_uuid || '') : '';
+          invocations.push({
+            id: agentId,
+            label: agentType + ' ' + truncId(agentId, 7),
+            value: info.total || 0,
+            agentType: agentType,
+            taskUuid: taskUuid
+          });
+        });
+      } else {
+        // Group spans by agent id
+        var byId = {};
+        spans.forEach(function(sp) {
+          if (sp.type !== 'agent') return;
+          if ((sp.agent_type || 'unknown') !== agentType) return;
+          if (!byId[sp.id]) byId[sp.id] = { value: 0, taskUuid: sp.task_uuid || '' };
+          byId[sp.id].value += sp.tool_calls || 0;
+          if (sp.task_uuid) byId[sp.id].taskUuid = sp.task_uuid;
+        });
+        Object.entries(byId).forEach(function(entry) {
+          invocations.push({
+            id: entry[0],
+            label: agentType + ' ' + truncId(entry[0], 7),
+            value: entry[1].value,
+            agentType: agentType,
+            taskUuid: entry[1].taskUuid || ''
+          });
+        });
+      }
+
+      invocations.sort(function(a, b) { return b.value - a.value; });
+      var maxVal = invocations.length > 0 ? invocations[0].value : 1;
+      if (maxVal === 0) maxVal = 1;
+      var totalVal = invocations.reduce(function(s, e) { return s + e.value; }, 0);
+
+      decompStack = [
+        { level: 'sessions', label: 'All Sessions' },
+        { level: 'session', label: sessionName, sessionId: sessionId },
+        { level: 'agentType', label: agentType, sessionId: sessionId, agentType: agentType }
+      ];
+
+      var html = renderDecompBreadcrumb();
+      html += '<div class="decomp-total-label">' + esc(agentType) + ' - ' + decompUnitLabel() + ': <b>' + decompFormatValue(totalVal) + '</b></div>';
+      html += '<div class="decomp-bars">';
+
+      var color = agentHex(agentType);
+      invocations.forEach(function(inv, idx) {
+        var pct = maxVal > 0 ? (inv.value / maxVal * 100) : 0;
+        var barColor = idx === 0 ? color : shiftColor(color, idx);
+        var viewBtn = '';
+        if (inv.taskUuid) {
+          viewBtn = ' <span class="decomp-view-btn" onclick="event.stopPropagation(); showTaskOverlay(\'' + esc(inv.taskUuid) + '\')" title="View task">&#128196;</span>';
+        } else {
+          viewBtn = ' <span class="decomp-view-btn" onclick="event.stopPropagation(); searchAndShowTask(\'\', \'' + esc(agentType) + '\', 0)" title="View task">&#128196;</span>';
+        }
+        html += '<div class="decomp-bar-row" onclick="decompDrillInvocation(\'' + esc(sessionId) + '\', \'' + esc(agentType) + '\', \'' + esc(inv.id) + '\')">';
+        html += '<div class="decomp-bar-label" title="' + esc(inv.id) + '">' + esc(inv.label) + viewBtn + '</div>';
+        html += '<div class="decomp-bar-track"><div class="decomp-bar-fill" style="width:' + pct + '%;background:' + barColor + ';">' + (pct > 15 ? decompFormatValue(inv.value) : '') + '</div></div>';
+        html += '<div class="decomp-bar-value">' + decompFormatValue(inv.value) + '</div>';
+        html += '</div>';
+      });
+
+      html += '</div>';
+      el.innerHTML = html;
+    }
+
+    // Level 3: Drill into invocation -> agent + workers
+    function decompDrillInvocation(sessionId, agentType, agentId) {
+      var el = document.getElementById('decomp-view');
+      var tokenData = decompTokenCache[sessionId] || {};
+      var spans = decompSpansCache[sessionId] || [];
+      var session = sessionsCache.find(function(s) { return s.session_id === sessionId; });
+      var sessionName = session ? (session.name || truncId(sessionId, 30)) : truncId(sessionId, 30);
+
+      // Find the agent span and its workers
+      var items = [];
+      if (globalUnit === 'tokens') {
+        var agentInfo = tokenData[agentId];
+        if (agentInfo) {
+          items.push({
+            label: agentType + ' (agent)',
+            value: agentInfo.total || 0,
+            color: agentHex(agentType),
+            isAgent: true
+          });
+        }
+        // Workers: find spans whose parent_id references this agent's task_uuid
+        var agentSpan = spans.find(function(sp) { return sp.id === agentId && sp.type === 'agent'; });
+        var taskUuid = agentSpan ? agentSpan.task_uuid : null;
+        spans.forEach(function(sp) {
+          if (sp.type !== 'worker') return;
+          var isChild = false;
+          if (sp.parent_id === 'task:' + taskUuid && taskUuid) isChild = true;
+          if (sp.parent_id === 'worker:' + agentId) isChild = true;
+          if (!isChild) return;
+          // Worker token data from spans.tokens or estimate from token cache
+          var wTokens = 0;
+          if (sp.tokens) {
+            wTokens = (sp.tokens.input_tokens || 0) + (sp.tokens.output_tokens || 0) +
+                      (sp.tokens.cache_creation || 0) + (sp.tokens.cache_read || 0);
+          }
+          items.push({
+            label: (sp.agent_type || 'worker') + ' / ' + truncId(sp.id, 8),
+            value: wTokens,
+            color: agentHex(sp.agent_type || 'worker'),
+            isAgent: false
+          });
+        });
+      } else {
+        // Tools mode
+        var agentSpans = spans.filter(function(sp) { return sp.id === agentId && sp.type === 'agent'; });
+        var agentTools = agentSpans.reduce(function(s, sp) { return s + (sp.tool_calls || 0); }, 0);
+        items.push({
+          label: agentType + ' (agent)',
+          value: agentTools,
+          color: agentHex(agentType),
+          isAgent: true
+        });
+        // Workers
+        var agentSpan = agentSpans[0];
+        var taskUuid = agentSpan ? agentSpan.task_uuid : null;
+        spans.forEach(function(sp) {
+          if (sp.type !== 'worker') return;
+          var isChild = false;
+          if (sp.parent_id === 'task:' + taskUuid && taskUuid) isChild = true;
+          if (sp.parent_id === 'worker:' + agentId) isChild = true;
+          if (!isChild) return;
+          items.push({
+            label: (sp.agent_type || 'worker') + ' / ' + truncId(sp.id, 8),
+            value: sp.tool_calls || 0,
+            color: agentHex(sp.agent_type || 'worker'),
+            isAgent: false
+          });
+        });
+      }
+
+      items.sort(function(a, b) { return b.value - a.value; });
+      var maxVal = items.length > 0 ? items[0].value : 1;
+      if (maxVal === 0) maxVal = 1;
+      var totalVal = items.reduce(function(s, e) { return s + e.value; }, 0);
+
+      decompStack = [
+        { level: 'sessions', label: 'All Sessions' },
+        { level: 'session', label: sessionName, sessionId: sessionId },
+        { level: 'agentType', label: agentType, sessionId: sessionId, agentType: agentType },
+        { level: 'invocation', label: truncId(agentId, 10), sessionId: sessionId, agentType: agentType, agentId: agentId }
+      ];
+
+      var html = renderDecompBreadcrumb();
+      html += '<div class="decomp-total-label">' + esc(agentType) + ' / ' + esc(truncId(agentId, 10)) + ' - ' + decompUnitLabel() + ': <b>' + decompFormatValue(totalVal) + '</b></div>';
+      html += '<div class="decomp-bars">';
+
+      items.forEach(function(item) {
+        var pct = maxVal > 0 ? (item.value / maxVal * 100) : 0;
+        html += '<div class="decomp-bar-row" style="cursor:default;">';
+        html += '<div class="decomp-bar-label">' + esc(item.label) + '</div>';
+        html += '<div class="decomp-bar-track"><div class="decomp-bar-fill" style="width:' + pct + '%;background:' + item.color + ';">' + (pct > 15 ? decompFormatValue(item.value) : '') + '</div></div>';
+        html += '<div class="decomp-bar-value">' + decompFormatValue(item.value) + '</div>';
+        html += '</div>';
+      });
+
+      html += '</div>';
+      el.innerHTML = html;
+    }
+
+    // Breadcrumb navigation
+    function renderDecompBreadcrumb() {
+      if (decompStack.length <= 1) return '';
+      var html = '<div class="decomp-breadcrumb">';
+      decompStack.forEach(function(crumb, i) {
+        if (i < decompStack.length - 1) {
+          html += '<span class="decomp-breadcrumb-item" onclick="decompNavigateTo(' + i + ')">' + esc(crumb.label) + '</span>';
+          html += '<span class="decomp-breadcrumb-sep">&rsaquo;</span>';
+        } else {
+          html += '<span class="decomp-breadcrumb-current">' + esc(crumb.label) + '</span>';
+        }
+      });
+      html += '</div>';
+      return html;
+    }
+
+    function decompNavigateTo(index) {
+      var crumb = decompStack[index];
+      if (!crumb) return;
+      if (crumb.level === 'sessions') {
+        renderDecompSessionLevel();
+      } else if (crumb.level === 'session') {
+        decompDrillSession(crumb.sessionId);
+      } else if (crumb.level === 'agentType') {
+        decompDrillAgentType(crumb.sessionId, crumb.agentType);
+      }
+    }
+
+    // ===== Auto-refresh =====
+    function startAutoRefresh() {
+      loadSessions();
+      refreshTimer = setInterval(loadSessions, 10000);
+    }
+
+    // ===== Init =====
+    startAutoRefresh();
+  </script>
+</body>
+</html>

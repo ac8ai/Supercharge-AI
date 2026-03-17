@@ -7,12 +7,14 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from supercharge.metrics import _db_path, _emit, _init_db, _query_events
+import pytest
 
+from supercharge.metrics import _db_path, _emit, _init_db, _open_readonly, _query_events
 
 # ── _db_path ─────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.no_isolate_metrics
 class TestDbPath:
     """Test _db_path returns the correct path."""
 
@@ -328,3 +330,37 @@ class TestQueryEvents:
         with self._patch_db_path(tmp_path):
             results = _query_events()
         assert results == []
+
+
+# ── _open_readonly ────────────────────────────────────────────────────────
+
+
+class TestOpenReadonly:
+    """Test _open_readonly opens the database in read-only mode."""
+
+    def _patch_db_path(self, tmp_path: Path):
+        return patch("supercharge.metrics._db_path", return_value=tmp_path / "metrics.db")
+
+    def test_readonly_rejects_writes(self, tmp_path: Path):
+        """A connection from _open_readonly should reject INSERT statements."""
+        db = tmp_path / "metrics.db"
+        conn = sqlite3.connect(str(db))
+        _init_db(conn)
+        conn.close()
+
+        with self._patch_db_path(tmp_path):
+            ro_conn = _open_readonly()
+            try:
+                with pytest.raises(sqlite3.OperationalError):
+                    ro_conn.execute(
+                        "INSERT INTO events (timestamp, event_type) VALUES ('t', 'e')"
+                    )
+            finally:
+                ro_conn.close()
+
+    def test_readonly_nonexistent_db_raises(self, tmp_path: Path):
+        """Opening a non-existent DB in read-only mode should raise OperationalError."""
+        with self._patch_db_path(tmp_path):
+            # DB file does not exist — should raise
+            with pytest.raises(sqlite3.OperationalError):
+                _open_readonly()
