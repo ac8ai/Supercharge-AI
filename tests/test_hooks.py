@@ -124,8 +124,14 @@ class TestEvaluatePreToolUse:
         )
         assert result is None
 
-    def test_unknown_tool_passthrough(self):
+    def test_read_always_allowed(self):
         result = _evaluate_pre_tool_use("Read", {"file_path": "/etc/passwd"}, "default")
+        assert result is not None
+        decision = result["hookSpecificOutput"]["permissionDecision"]
+        assert decision == "allow"
+
+    def test_unknown_tool_passthrough(self):
+        result = _evaluate_pre_tool_use("Grep", {"pattern": "foo"}, "default")
         assert result is None
 
 

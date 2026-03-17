@@ -234,6 +234,9 @@ def _evaluate_pre_tool_use(tool_name: str, tool_input: dict, permission_mode: st
     - None (pass-through) means we make no decision -- Claude Code continues with
       its normal permission flow (typically prompting the user).
     """
+    if tool_name == "Read":
+        return _allow("Read: always allowed")
+
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if command.startswith("supercharge "):
