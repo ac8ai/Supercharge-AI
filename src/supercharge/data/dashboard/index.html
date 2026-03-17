@@ -156,16 +156,125 @@
       } catch(e) { return iso; }
     }
 
-    function fmtTimelineLabel(hourStr) {
-      // Parse "2026-03-15T09" -> human-readable "Mar 15, 9 PM"
-      if (!hourStr) return '';
+    function fmtTimelineLabel(key, granularity, index, allKeys) {
+      // Format label based on granularity
+      if (!key) return '';
       try {
-        var d = new Date(hourStr + ':00:00');
-        if (isNaN(d.getTime())) return hourStr;
-        return d.toLocaleString('en-US', {
-          month: 'short', day: 'numeric', hour: 'numeric'
-        });
-      } catch(e) { return hourStr; }
+        if (granularity === 'hour') {
+          var d = new Date(key + ':00:00');
+          if (isNaN(d.getTime())) return key;
+          var hourLabel = d.toLocaleString('en-US', { hour: 'numeric' });
+          // Show date on first bar or when date changes
+          if (index === 0 || (allKeys && index > 0 && key.slice(0, 10) !== allKeys[index - 1].slice(0, 10))) {
+            return d.toLocaleString('en-US', { month: 'short', day: 'numeric' }) + '\n' + hourLabel;
+          }
+          return hourLabel;
+        } else if (granularity === 'day') {
+          var d = new Date(key + 'T00:00:00');
+          if (isNaN(d.getTime())) return key;
+          var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          return days[d.getDay()] + ' ' + d.getDate();
+        } else if (granularity === 'week') {
+          // key is start date of week like "2026-03-10"
+          var d = new Date(key + 'T00:00:00');
+          if (isNaN(d.getTime())) return key;
+          var end = new Date(d);
+          end.setDate(end.getDate() + 6);
+          var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          return months[d.getMonth()] + ' ' + d.getDate() + '-' + end.getDate();
+        } else if (granularity === 'month') {
+          // key like "2026-03"
+          var parts = key.split('-');
+          var d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
+          if (isNaN(d.getTime())) return key;
+          return d.toLocaleString('en-US', { month: 'short' }) + ' ' + d.getFullYear();
+        }
+        return key;
+      } catch(e) { return key; }
+    }
+
+    function aggregateTimeline(rawTimeline, granularity) {
+      // rawTimeline: [{hour: "2026-03-15T09", count: N}, ...]
+      // Returns [{key: "...", count: N}, ...] aggregated by granularity
+      if (!rawTimeline || !rawTimeline.length) return [];
+      if (granularity === 'hour') {
+        return rawTimeline.map(function(t) { return {key: t.hour, count: t.count}; });
+      }
+      var buckets = {};
+      var order = [];
+      rawTimeline.forEach(function(t) {
+        var bucketKey;
+        if (granularity === 'day') {
+          bucketKey = t.hour.slice(0, 10); // "2026-03-15"
+        } else if (granularity === 'week') {
+          var d = new Date(t.hour + ':00:00');
+          var day = d.getDay(); // 0=Sun
+          var mon = new Date(d);
+          mon.setDate(mon.getDate() - ((day + 6) % 7)); // Monday
+          bucketKey = mon.toISOString().slice(0, 10);
+        } else if (granularity === 'month') {
+          bucketKey = t.hour.slice(0, 7); // "2026-03"
+        }
+        if (!buckets[bucketKey]) {
+          buckets[bucketKey] = 0;
+          order.push(bucketKey);
+        }
+        buckets[bucketKey] += t.count;
+      });
+      return order.map(function(k) { return {key: k, count: buckets[k]}; });
+    }
+
+    function autoGranularity(rawTimeline) {
+      if (!rawTimeline || rawTimeline.length < 2) return 'hour';
+      var first = rawTimeline[0].hour.slice(0, 10);
+      var last = rawTimeline[rawTimeline.length - 1].hour.slice(0, 10);
+      var d0 = new Date(first + 'T00:00:00');
+      var d1 = new Date(last + 'T00:00:00');
+      var days = (d1 - d0) / (1000 * 60 * 60 * 24);
+      if (days > 3) return 'day';
+      return 'hour';
+    }
+
+    function filterTimelineByPeriod(rawTimeline, period) {
+      if (!rawTimeline || !rawTimeline.length || period === 'all') return rawTimeline;
+      var now = new Date();
+      var cutoff;
+      if (period === '24h') {
+        cutoff = new Date(now - 24 * 60 * 60 * 1000);
+      } else if (period === '7d') {
+        cutoff = new Date(now - 7 * 24 * 60 * 60 * 1000);
+      } else if (period === '30d') {
+        cutoff = new Date(now - 30 * 24 * 60 * 60 * 1000);
+      } else {
+        return rawTimeline;
+      }
+      return rawTimeline.filter(function(t) {
+        var d = new Date(t.hour + ':00:00');
+        return d >= cutoff;
+      });
+    }
+
+    function fmtTimelineTooltip(item, granularity) {
+      var count = item.count + ' event' + (item.count !== 1 ? 's' : '');
+      if (granularity === 'hour') {
+        var d = new Date(item.key + ':00:00');
+        if (isNaN(d.getTime())) return count;
+        var label = d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric' });
+        return label + '\n' + count;
+      } else if (granularity === 'day') {
+        var d = new Date(item.key + 'T00:00:00');
+        return d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + '\n' + count;
+      } else if (granularity === 'week') {
+        var d = new Date(item.key + 'T00:00:00');
+        var end = new Date(d);
+        end.setDate(end.getDate() + 6);
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return months[d.getMonth()] + ' ' + d.getDate() + ' - ' + months[end.getMonth()] + ' ' + end.getDate() + '\n' + count;
+      } else if (granularity === 'month') {
+        var d = new Date(item.key + '-01T00:00:00');
+        return d.toLocaleString('en-US', { month: 'long', year: 'numeric' }) + '\n' + count;
+      }
+      return count;
     }
 
     function fmtSize(bytes) {
@@ -1715,29 +1824,86 @@
 
     // ===== Expand/Collapse controls =====
     function expandAllSessions() {
-      document.querySelectorAll('.session-card').forEach(function(card) {
-        if (!card.classList.contains('expanded')) {
-          var head = card.querySelector('.session-head');
-          if (head) toggleSession(head);
+      if (globalUnit === 'time') {
+        // Time view: expand session cards or project headers
+        if (currentProject) {
+          document.querySelectorAll('.session-card').forEach(function(card) {
+            if (!card.classList.contains('expanded')) {
+              var head = card.querySelector('.session-head');
+              if (head) toggleSession(head);
+            }
+          });
+        } else {
+          // Expand all projects in time view
+          document.querySelectorAll('.project-header[data-project-slug]').forEach(function(header) {
+            var slug = header.dataset.projectSlug;
+            if (!expandedTimeProjectSlugs.has(slug)) {
+              toggleProjectTimeExpand(header, slug);
+            }
+          });
         }
-      });
+      } else {
+        // Decomp view: expand all projects or sessions
+        if (currentProject) {
+          // Expand all sessions in decomp
+          document.querySelectorAll('.decomp-bar-row[data-sid]').forEach(function(row) {
+            var sid = row.dataset.sid;
+            if (!expandedSessionIds.has(sid)) {
+              decompToggleSession(row, sid);
+            }
+          });
+        } else {
+          // Expand all projects in decomp
+          document.querySelectorAll('.decomp-bar-row[data-project-slug]').forEach(function(row) {
+            var slug = row.dataset.projectSlug;
+            if (!expandedProjectSlugs.has(slug)) {
+              decompToggleProject(row, slug);
+            }
+          });
+        }
+      }
     }
 
     function collapseAllSessions() {
-      document.querySelectorAll('.session-card.expanded').forEach(function(card) {
-        var sid = card.dataset.sid;
-        card.classList.remove('expanded');
-        if (cytoscapeInstances[sid]) {
-          cytoscapeInstances[sid].destroy();
-          delete cytoscapeInstances[sid];
+      if (globalUnit === 'time') {
+        if (currentProject) {
+          document.querySelectorAll('.session-card.expanded').forEach(function(card) {
+            var sid = card.dataset.sid;
+            card.classList.remove('expanded');
+            if (cytoscapeInstances[sid]) {
+              cytoscapeInstances[sid].destroy();
+              delete cytoscapeInstances[sid];
+            }
+          });
+        } else {
+          // Collapse all projects in time view
+          Array.from(expandedTimeProjectSlugs).forEach(function(slug) {
+            var header = document.querySelector('.project-header[data-project-slug="' + slug + '"]');
+            if (header) toggleProjectTimeExpand(header, slug);
+          });
         }
-      });
+      } else {
+        if (currentProject) {
+          Array.from(expandedSessionIds).forEach(function(sid) {
+            var row = document.querySelector('.decomp-bar-row[data-sid="' + sid + '"]');
+            if (row) decompToggleSession(row, sid);
+          });
+        } else {
+          Array.from(expandedProjectSlugs).forEach(function(slug) {
+            var row = document.querySelector('.decomp-bar-row[data-project-slug="' + slug + '"]');
+            if (row) decompToggleProject(row, slug);
+          });
+        }
+      }
     }
 
     // ===== Stats =====
     var statsViewMode = 'absolute'; // 'absolute' or 'percentage'
     var globalToolData = null; // cached /api/stats/tools response
     var expandedAgentType = null; // currently expanded agent type in stats
+    var timelineGranularity = null; // null = auto, 'hour'|'day'|'week'|'month'
+    var timelinePeriod = 'all'; // 'all'|'24h'|'7d'|'30d'
+    var rawTimelineCache = null; // cache raw timeline data for re-renders
 
     async function loadStats() {
       var el = document.getElementById('stats-content');
@@ -1825,18 +1991,8 @@
 
       // Timeline
       if (data.timeline && data.timeline.length) {
-        var maxCount = Math.max.apply(null, data.timeline.map(function(t) { return t.count; }));
-        html += '<div class="stats-section"><h3>Timeline (hourly)</h3><div class="timeline-chart">';
-        data.timeline.forEach(function(t) {
-          var pct = maxCount > 0 ? (t.count / maxCount * 100) : 0;
-          var label = fmtTimelineLabel(t.hour);
-          html += '<div class="timeline-bar-wrap">' +
-            '<div class="timeline-count">' + t.count + '</div>' +
-            '<div class="timeline-bar" style="height:' + Math.max(pct, 3) + '%"></div>' +
-            '<div class="timeline-label">' + esc(label) + '</div>' +
-          '</div>';
-        });
-        html += '</div></div>';
+        rawTimelineCache = data.timeline;
+        html += renderTimelineSection(data.timeline);
       }
 
       // Averages
@@ -1853,6 +2009,124 @@
     function setStatsViewMode(mode) {
       statsViewMode = mode;
       loadStats();
+    }
+
+    function renderTimelineSection(rawTimeline) {
+      var gran = timelineGranularity || autoGranularity(rawTimeline);
+      var filtered = filterTimelineByPeriod(rawTimeline, timelinePeriod);
+      var aggregated = aggregateTimeline(filtered, gran);
+      var allKeys = aggregated.map(function(a) { return a.key; });
+
+      var maxCount = aggregated.length ? Math.max.apply(null, aggregated.map(function(t) { return t.count; })) : 0;
+
+      var html = '<div class="stats-section" id="timeline-section"><h3>Timeline</h3>';
+
+      // Controls row
+      html += '<div class="timeline-controls">';
+
+      // Granularity selector
+      html += '<div class="timeline-granularity">';
+      ['hour', 'day', 'week', 'month'].forEach(function(g) {
+        var active = g === gran ? ' active' : '';
+        var label = g.charAt(0).toUpperCase() + g.slice(1);
+        html += '<button class="tl-btn' + active + '" onclick="setTimelineGranularity(\'' + g + '\')">' + label + '</button>';
+      });
+      html += '</div>';
+
+      // Period selector
+      html += '<div class="timeline-period">';
+      [['24h', 'Last 24h'], ['7d', 'Last 7d'], ['30d', 'Last 30d'], ['all', 'All time']].forEach(function(p) {
+        var active = p[0] === timelinePeriod ? ' active' : '';
+        html += '<button class="tl-btn' + active + '" onclick="setTimelinePeriod(\'' + p[0] + '\')">' + p[1] + '</button>';
+      });
+      html += '</div>';
+
+      html += '</div>'; // end timeline-controls
+
+      if (!aggregated.length) {
+        html += '<div class="empty-state">No data for this period</div>';
+        html += '</div>';
+        return html;
+      }
+
+      // Scrollable chart
+      html += '<div class="timeline-scroll">';
+      html += '<div class="timeline-chart">';
+      aggregated.forEach(function(t, i) {
+        var pct = maxCount > 0 ? (t.count / maxCount * 100) : 0;
+        var label = fmtTimelineLabel(t.key, gran, i, allKeys);
+        // Convert newlines in label to <br> for HTML rendering
+        var htmlLabel = label.split('\n').map(function(part) { return esc(part); }).join('<br>');
+        var tooltipText = fmtTimelineTooltip(t, gran);
+        // Encode tooltip for data attribute
+        var safeTooltip = tooltipText.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        // Split label: date part (if any) goes on second line below time
+        var labelParts = label.split('\n');
+        var timePart = labelParts.length > 1 ? esc(labelParts[1]) : esc(labelParts[0]);
+        var datePart = labelParts.length > 1 ? '<br>' + esc(labelParts[0]) : '';
+        html += '<div class="timeline-bar-wrap" data-tooltip="' + safeTooltip + '" onmouseenter="showTimelineTooltip(event)" onmouseleave="hideTimelineTooltip()">' +
+          '<div class="timeline-bar-area">' +
+            '<div class="timeline-count">' + t.count + '</div>' +
+            '<div class="timeline-bar" style="height:' + Math.max(pct, 3) + '%"></div>' +
+          '</div>' +
+          '<div class="timeline-label">' + timePart + datePart + '</div>' +
+        '</div>';
+      });
+      html += '</div></div>'; // end chart + scroll
+
+      html += '</div>'; // end stats-section
+      return html;
+    }
+
+    function setTimelineGranularity(g) {
+      timelineGranularity = g;
+      if (rawTimelineCache) {
+        var section = document.getElementById('timeline-section');
+        if (section) {
+          var parent = section.parentNode;
+          var temp = document.createElement('div');
+          temp.innerHTML = renderTimelineSection(rawTimelineCache);
+          parent.replaceChild(temp.firstChild, section);
+        }
+      }
+    }
+
+    function setTimelinePeriod(p) {
+      timelinePeriod = p;
+      // Reset granularity to auto when period changes
+      timelineGranularity = null;
+      if (rawTimelineCache) {
+        var section = document.getElementById('timeline-section');
+        if (section) {
+          var parent = section.parentNode;
+          var temp = document.createElement('div');
+          temp.innerHTML = renderTimelineSection(rawTimelineCache);
+          parent.replaceChild(temp.firstChild, section);
+        }
+      }
+    }
+
+    var timelineTooltipEl = null;
+    function showTimelineTooltip(event) {
+      var wrap = event.currentTarget;
+      var text = wrap.getAttribute('data-tooltip');
+      if (!text) return;
+      if (!timelineTooltipEl) {
+        timelineTooltipEl = document.createElement('div');
+        timelineTooltipEl.className = 'timeline-tooltip';
+        document.body.appendChild(timelineTooltipEl);
+      }
+      timelineTooltipEl.textContent = text;
+      timelineTooltipEl.classList.add('visible');
+      var rect = wrap.getBoundingClientRect();
+      timelineTooltipEl.style.left = (rect.left + rect.width / 2 - 40) + 'px';
+      timelineTooltipEl.style.top = (rect.top - 40) + 'px';
+    }
+
+    function hideTimelineTooltip() {
+      if (timelineTooltipEl) {
+        timelineTooltipEl.classList.remove('visible');
+      }
     }
 
     function toggleAgentDetail(type) {
@@ -2097,9 +2371,8 @@
       if (unit === 'time') {
         sessionList.style.display = '';
         decompView.style.display = 'none';
-        // Show expand/collapse only when viewing session cards (zoomed into project)
-        expandBtn.style.display = currentProject ? '' : 'none';
-        collapseBtn.style.display = currentProject ? '' : 'none';
+        expandBtn.style.display = '';
+        collapseBtn.style.display = '';
         sortSelector.style.display = 'none';
         if (currentProject) {
           zoomIntoProject(currentProject.slug);
@@ -2109,8 +2382,8 @@
       } else {
         sessionList.style.display = 'none';
         decompView.style.display = '';
-        expandBtn.style.display = 'none';
-        collapseBtn.style.display = 'none';
+        expandBtn.style.display = '';
+        collapseBtn.style.display = '';
         sortSelector.style.display = 'flex';
         decompStack = [];
         if (currentProject) {
