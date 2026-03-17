@@ -60,8 +60,15 @@
 
     <!-- Browse Tab -->
     <div id="tab-browse" class="tab-panel">
-      <div id="browse-content">
-        <div class="empty-state">Loading file tree...</div>
+      <div class="browse-subtabs">
+        <button class="browse-subtab-btn active" data-subtab="framework" onclick="switchBrowseSubtab('framework', this)">Framework</button>
+        <button class="browse-subtab-btn" data-subtab="projects" onclick="switchBrowseSubtab('projects', this)">Projects</button>
+      </div>
+      <div id="browse-framework" class="browse-subpanel active">
+        <div class="empty-state">Loading memories...</div>
+      </div>
+      <div id="browse-projects" class="browse-subpanel" style="display:none">
+        <div class="empty-state">Loading tasks...</div>
       </div>
     </div>
   </div>
@@ -363,16 +370,36 @@
         if (globalUnit === 'time') {
           if (currentProject) {
             // Re-render the project session view (with back button)
-            zoomIntoProject(currentProject.slug);
+            await zoomIntoProject(currentProject.slug);
+            // Re-expand session cards that were open
+            expandedTimeSessionIds.forEach(function(sid) {
+              var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
+              if (card && !card.classList.contains('expanded')) {
+                var head = card.querySelector('.session-head');
+                if (head) toggleSession(head);
+              }
+            });
           } else {
             renderProjectTimeView();
-            // Re-expand previously expanded projects in time view
+            // Re-expand previously expanded projects and sessions in time view
             var timeExpanded = Array.from(expandedTimeProjectSlugs);
+            var timeExpandedSessions = Array.from(expandedTimeSessionIds);
             expandedTimeProjectSlugs.clear();
-            timeExpanded.forEach(function(slug) {
+            for (var _i = 0; _i < timeExpanded.length; _i++) {
+              var slug = timeExpanded[_i];
               var header = document.querySelector('.project-header[data-project-slug="' + slug + '"]');
-              if (header) toggleProjectTimeExpand(header, slug);
-            });
+              if (header) {
+                await toggleProjectTimeExpand(header, slug);
+                // Re-expand session cards within this project
+                timeExpandedSessions.forEach(function(sid) {
+                  var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
+                  if (card && !card.classList.contains('expanded')) {
+                    var head = card.querySelector('.session-head');
+                    if (head) toggleSession(head);
+                  }
+                });
+              }
+            }
           }
         } else {
           // Decomp view
@@ -530,15 +557,16 @@
       var card = headEl.closest('.session-card');
       var wasExpanded = card.classList.contains('expanded');
       card.classList.toggle('expanded');
+      var sid = card.dataset.sid;
       if (wasExpanded) {
-        // Destroy cytoscape instance when collapsing
-        var sid = card.dataset.sid;
+        expandedTimeSessionIds.delete(sid);
         if (cytoscapeInstances[sid]) {
           cytoscapeInstances[sid].destroy();
           delete cytoscapeInstances[sid];
         }
         return;
       }
+      expandedTimeSessionIds.add(sid);
 
       var sid = card.dataset.sid;
       var body = card.querySelector('.session-body');
@@ -1385,7 +1413,8 @@
             bar.style('cursor', 'pointer');
 
             // Duration + tool count text
-            var durText = s.end ? fmtDuration((s.end - s.start) / 1000) : 'running...';
+            // For completed spans, show duration. For running spans, show agent type + short ID.
+            var durText = s.end ? fmtDuration((s.end - s.start) / 1000) : (s.agentType + ' ' + (s.id || '').slice(0, 6));
             var toolText = s.toolCalls > 0 ? ' \u00b7 ' + s.toolCalls + ' tools' : '';
 
             // Check if there's a next bar on the same row (resume) — limit outside text
@@ -1535,12 +1564,11 @@
               })(s.id);
             }
 
-            // Tooltip
+            // Tooltip — show full span details on hover
             (function(span, wc) {
               bar.on('mouseover', function(event) {
                 var lines = [
-                  span.agentType + (span.isResume ? ' (resumed)' : ' (fresh)'),
-                  'ID: ' + span.id.slice(0, 12) + '...',
+                  span.agentType + (span.isResume ? ' (resumed)' : ''),
                   'Start: ' + fmtTime(new Date(span.start).toISOString()),
                 ];
                 if (span.end) {
@@ -1549,8 +1577,10 @@
                 } else {
                   lines.push('Status: running');
                 }
-                lines.push('Workers: ' + wc);
-                if (span.taskUuid) lines.push('Task: ' + span.taskUuid.slice(0, 16) + '...');
+                if (span.toolCalls > 0) lines.push('Tools: ' + span.toolCalls);
+                if (wc > 0) lines.push('Workers: ' + wc);
+                if (span.taskUuid) lines.push('Task: ' + span.taskUuid);
+                lines.push('ID: ' + span.id);
                 tooltip.style('display', 'block').html(lines.join('\n'));
               })
               .on('mousemove', function(event) {
@@ -2279,32 +2309,245 @@
     }
 
     // ===== Browse =====
+    var browseActiveSubtab = 'framework';
+
+    function switchBrowseSubtab(subtab, btn) {
+      browseActiveSubtab = subtab;
+      document.querySelectorAll('.browse-subtab-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.querySelectorAll('.browse-subpanel').forEach(function(p) { p.style.display = 'none'; p.classList.remove('active'); });
+      var panel = document.getElementById('browse-' + subtab);
+      panel.style.display = 'block';
+      panel.classList.add('active');
+      if (subtab === 'framework') loadMemories();
+      if (subtab === 'projects') loadProjectTasks();
+    }
+
     async function loadBrowse() {
-      var el = document.getElementById('browse-content');
-      try {
-        var resp = await fetch('/api/browse');
-        var data = await resp.json();
-        renderBrowse(data, el);
-      } catch(e) {
-        el.innerHTML = '<div class="empty-state">Failed to load file tree</div>';
+      if (browseActiveSubtab === 'framework') {
+        loadMemories();
+      } else {
+        loadProjectTasks();
       }
     }
 
+    // -- Framework (Memories) sub-tab --
+    async function loadMemories() {
+      var el = document.getElementById('browse-framework');
+      try {
+        var resp = await fetch('/api/browse/memories');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        renderMemories(data, el);
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load memories</div>';
+      }
+    }
+
+    function renderMemories(data, el) {
+      var categories = data.categories;
+      if (!categories || Object.keys(categories).length === 0) {
+        el.innerHTML = '<div class="empty-state">No memory files found</div>';
+        return;
+      }
+
+      var html = '';
+      Object.keys(categories).sort().forEach(function(cat) {
+        var items = categories[cat];
+        if (!items || items.length === 0) return;
+        var catLabel = cat.replace(/\//g, ' / ');
+        html += '<div class="memory-category">' + esc(catLabel) + '</div>';
+        items.forEach(function(mem) {
+          var keywords = '';
+          if (mem.keywords && mem.keywords.length > 0) {
+            keywords = '<div class="memory-tags">';
+            mem.keywords.forEach(function(kw) {
+              keywords += '<span class="memory-tag">' + esc(kw) + '</span>';
+            });
+            keywords += '</div>';
+          }
+          var updated = mem.updated ? '<span class="memory-date">' + esc(mem.updated) + '</span>' : '';
+          var preview = mem.preview ? '<div class="memory-preview">' + esc(mem.preview) + '</div>' : '';
+          html += '<div class="memory-card" data-path="' + esc(mem.path) + '" onclick="toggleMemoryCard(this)">';
+          html += '<div class="memory-card-head">';
+          html += '<span class="memory-title">' + esc(mem.title || mem.path) + '</span>';
+          html += updated;
+          html += '</div>';
+          html += keywords;
+          html += preview;
+          html += '<div class="memory-expand" style="display:none"></div>';
+          html += '</div>';
+        });
+      });
+
+      el.innerHTML = html;
+    }
+
+    async function toggleMemoryCard(card) {
+      var expandEl = card.querySelector('.memory-expand');
+      if (card.classList.contains('expanded')) {
+        card.classList.remove('expanded');
+        expandEl.style.display = 'none';
+        return;
+      }
+
+      card.classList.add('expanded');
+      expandEl.style.display = 'block';
+
+      if (expandEl.dataset.loaded) return;
+
+      expandEl.innerHTML = '<div class="empty-state" style="padding:10px">Loading...</div>';
+      try {
+        var path = card.dataset.path;
+        var resp = await fetch('/api/browse/memories/' + encodeURIComponent(path));
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        var content = data.content || '';
+        var rendered;
+        if (typeof marked !== 'undefined') {
+          try { rendered = marked.parse(content); } catch(e) { rendered = '<pre style="white-space:pre-wrap">' + esc(content) + '</pre>'; }
+        } else {
+          rendered = '<pre style="white-space:pre-wrap">' + esc(content) + '</pre>';
+        }
+        expandEl.innerHTML = '<div class="task-overlay-content" style="max-height:none">' + rendered + '</div>';
+        expandEl.dataset.loaded = '1';
+      } catch(e) {
+        expandEl.innerHTML = '<div class="empty-state" style="padding:10px">Failed to load content</div>';
+      }
+    }
+
+    // -- Projects (Tasks) sub-tab --
+    async function loadProjectTasks() {
+      var el = document.getElementById('browse-projects');
+      try {
+        var resp = await fetch('/api/browse/tasks');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        renderProjectTasks(data, el);
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load tasks</div>';
+      }
+    }
+
+    function renderProjectTasks(data, el) {
+      var active = data.active || {};
+      var archived = data.archived || [];
+      var agentTypes = Object.keys(active).sort();
+
+      if (agentTypes.length === 0 && archived.length === 0) {
+        el.innerHTML = '<div class="empty-state">No tasks found</div>';
+        return;
+      }
+
+      var html = '';
+      agentTypes.forEach(function(atype) {
+        var tasks = active[atype];
+        if (!tasks || tasks.length === 0) return;
+        var color = agentColor(atype);
+        html += '<div class="task-group">';
+        html += '<div class="task-group-header"><span class="badge badge-' + color + '">' + esc(atype) + '</span> <span class="task-group-count">' + tasks.length + ' task' + (tasks.length !== 1 ? 's' : '') + '</span></div>';
+        tasks.forEach(function(t) {
+          var statusClass = t.status === 'completed' ? 'status-completed' : 'status-pending';
+          var shortUuid = (t.uuid || '').substring(0, 8);
+          html += '<div class="task-card" data-uuid="' + esc(t.uuid) + '" onclick="toggleTaskCard(this)">';
+          html += '<div class="task-card-head">';
+          html += '<span class="status-dot ' + statusClass + '"></span>';
+          html += '<span class="badge badge-' + color + '" style="font-size:9px;padding:0 4px;">' + esc(atype) + '</span>';
+          html += '<span class="task-card-uuid">' + esc(shortUuid) + '</span>';
+          html += '<span class="task-card-title">' + esc(t.title || 'Untitled') + '</span>';
+          html += '<span class="task-card-date">' + (t.created_at ? esc(fmtTime(t.created_at)) : '') + '</span>';
+          html += '</div>';
+          html += '<div class="task-expand" style="display:none"></div>';
+          html += '</div>';
+        });
+        html += '</div>';
+      });
+
+      if (archived.length > 0) {
+        html += '<details class="task-archive-section"><summary class="task-archive-header">Archived (' + archived.length + ')</summary>';
+        html += '<div class="task-archive-list">';
+        archived.forEach(function(t) {
+          var color = agentColor(t.agent_type);
+          var shortUuid = (t.uuid || '').substring(0, 8);
+          html += '<div class="task-card task-card-archived" data-uuid="' + esc(t.uuid) + '" onclick="toggleTaskCard(this)">';
+          html += '<div class="task-card-head">';
+          html += '<span class="badge badge-' + color + '" style="font-size:9px;padding:0 4px;">' + esc(t.agent_type) + '</span>';
+          html += '<span class="task-card-uuid">' + esc(shortUuid) + '</span>';
+          html += '<span class="task-card-title">' + esc(t.title || 'Untitled') + '</span>';
+          html += '<span class="task-card-date">' + (t.created_at ? esc(fmtTime(t.created_at)) : '') + '</span>';
+          html += '</div>';
+          html += '<div class="task-expand" style="display:none"></div>';
+          html += '</div>';
+        });
+        html += '</div></details>';
+      }
+
+      el.innerHTML = html;
+    }
+
+    async function toggleTaskCard(card) {
+      var expandEl = card.querySelector('.task-expand');
+      if (card.classList.contains('expanded')) {
+        card.classList.remove('expanded');
+        expandEl.style.display = 'none';
+        return;
+      }
+
+      card.classList.add('expanded');
+      expandEl.style.display = 'block';
+
+      if (expandEl.dataset.loaded) return;
+
+      expandEl.innerHTML = '<div class="empty-state" style="padding:10px">Loading...</div>';
+      try {
+        var uuid = card.dataset.uuid;
+        var resp = await fetch('/api/tasks/' + encodeURIComponent(uuid) + '/content');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        var html = '';
+
+        if (data.task_md && data.task_md.trim() !== '(empty)') {
+          html += '<div class="task-expand-section"><div class="task-expand-label">task.md</div>';
+          var rendered;
+          if (typeof marked !== 'undefined') {
+            try { rendered = marked.parse(data.task_md); } catch(e) { rendered = '<pre style="white-space:pre-wrap">' + esc(data.task_md) + '</pre>'; }
+          } else {
+            rendered = '<pre style="white-space:pre-wrap">' + esc(data.task_md) + '</pre>';
+          }
+          html += '<div class="task-overlay-content" style="max-height:400px">' + rendered + '</div></div>';
+        }
+
+        if (data.result_md && data.result_md.trim() !== '(empty)') {
+          html += '<div class="task-expand-section"><div class="task-expand-label">result.md</div>';
+          var rendered2;
+          if (typeof marked !== 'undefined') {
+            try { rendered2 = marked.parse(data.result_md); } catch(e) { rendered2 = '<pre style="white-space:pre-wrap">' + esc(data.result_md) + '</pre>'; }
+          } else {
+            rendered2 = '<pre style="white-space:pre-wrap">' + esc(data.result_md) + '</pre>';
+          }
+          html += '<div class="task-overlay-content" style="max-height:400px">' + rendered2 + '</div></div>';
+        }
+
+        if (!html) html = '<div class="empty-state" style="padding:10px">No content available</div>';
+        expandEl.innerHTML = html;
+        expandEl.dataset.loaded = '1';
+      } catch(e) {
+        expandEl.innerHTML = '<div class="empty-state" style="padding:10px">Failed to load task content</div>';
+      }
+    }
+
+    // Legacy browse functions kept for backward compat
     function renderBrowse(data, el) {
       if (!data.tree) {
         el.innerHTML = '<div class="empty-state">No SuperchargeAI directory found</div>';
         return;
       }
-
       var taskMeta = {};
       if (data.tasks) {
         Object.entries(data.tasks).forEach(function(entry) {
-          entry[1].forEach(function(t) {
-            taskMeta[t.folder] = t;
-          });
+          entry[1].forEach(function(t) { taskMeta[t.folder] = t; });
         });
       }
-
       var html = '<div class="browse-tree">';
       html += renderBrowseNode(data.tree, taskMeta, true);
       html += '</div>';
@@ -2313,34 +2556,18 @@
 
     function renderBrowseNode(node, taskMeta, isRoot) {
       if (node.type === 'file') {
-        return '<div class="file-entry">' +
-          '<span class="file-icon">&#128196;</span>' +
-          '<span class="file-name">' + esc(node.name) + '</span>' +
-          '<span class="file-meta">' + fmtSize(node.size || 0) + '</span>' +
-        '</div>';
+        return '<div class="file-entry"><span class="file-icon">&#128196;</span><span class="file-name">' + esc(node.name) + '</span><span class="file-meta">' + fmtSize(node.size || 0) + '</span></div>';
       }
-
       var meta = taskMeta[node.name];
       var annotation = '';
       if (meta) {
         var color = agentColor(meta.agent_type);
         annotation = ' <span class="task-badge badge-' + color + '">' + esc(meta.agent_type) + '</span>';
-        if (meta.created_at) {
-          annotation += ' <span class="file-meta">' + esc(fmtTime(meta.created_at)) + '</span>';
-        }
+        if (meta.created_at) annotation += ' <span class="file-meta">' + esc(fmtTime(meta.created_at)) + '</span>';
       }
-
       var children = (node.children || []).map(function(c) { return renderBrowseNode(c, taskMeta, false); }).join('');
       var openAttr = isRoot ? ' open' : '';
-
-      return '<details' + openAttr + '>' +
-        '<summary>' +
-          '<span class="dir-icon">&#128193;</span> ' +
-          '<span class="file-name">' + esc(node.name) + '</span>' +
-          annotation +
-        '</summary>' +
-        children +
-      '</details>';
+      return '<details' + openAttr + '><summary><span class="dir-icon">&#128193;</span> <span class="file-name">' + esc(node.name) + '</span>' + annotation + '</summary>' + children + '</details>';
     }
 
     // ===== Global Unit Selector & Decomposition Bars =====
@@ -2355,6 +2582,7 @@
     var expandedProjectSlugs = new Set(); // track expanded projects in decomp view
     var expandedTimeProjectSlugs = new Set(); // track expanded projects in time view
     var expandedSessionIds = new Set(); // track expanded sessions within expanded projects
+    var expandedTimeSessionIds = new Set(); // track expanded session cards in time view
 
     function setGlobalUnit(unit) {
       globalUnit = unit;

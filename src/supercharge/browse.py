@@ -2,10 +2,12 @@
 
 Provides functions to walk the SuperchargeAI directory tree, read task and
 worker summaries from frontmatter, and build a complete browse response.
+Also provides memory browsing and structured task browsing.
 """
 
 from __future__ import annotations
 
+import itertools
 from datetime import datetime
 from pathlib import Path
 
@@ -178,3 +180,235 @@ def _build_browse_response(project_dir: Path | None = None) -> dict:
                 })
 
     return result
+
+
+def _resolve_sa_root(project_dir: Path | None) -> Path:
+    """Resolve the SuperchargeAI root directory.
+
+    Shared helper for memory/task browsing functions.
+    """
+    if project_dir is None:
+        try:
+            from supercharge.paths import _supercharge_root
+            return _supercharge_root()
+        except ImportError:
+            from supercharge.paths import _project_dir
+            return Path(_project_dir()) / ".claude" / "SuperchargeAI"
+    return _supercharge_root_for(project_dir)
+
+
+def _parse_keywords(raw: str) -> list[str]:
+    """Parse a keywords string like ``[kw1, kw2, kw3]`` into a list.
+
+    Returns empty list if the format doesn't match.
+    """
+    raw = raw.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        inner = raw[1:-1]
+        return [k.strip() for k in inner.split(",") if k.strip()]
+    return [raw] if raw else []
+
+
+def _extract_preview(path: Path, max_lines: int = 3) -> str:
+    """Extract first *max_lines* non-empty content lines after frontmatter."""
+    try:
+        with path.open() as f:
+            first_line = f.readline()
+            if first_line.strip() == "---":
+                # Skip frontmatter
+                for line in f:
+                    if line.strip() == "---":
+                        break
+                remaining_lines = f
+            else:
+                # No frontmatter — chain the first line back
+                remaining_lines = itertools.chain([first_line], f)
+            lines: list[str] = []
+            for line in remaining_lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # Skip markdown headings for preview
+                if stripped.startswith("#"):
+                    continue
+                lines.append(stripped)
+                if len(lines) >= max_lines:
+                    break
+            return " ".join(lines)
+    except OSError:
+        return ""
+
+
+def _build_memories_response(project_dir: Path | None = None) -> dict:
+    """Build a categorised listing of all memory files.
+
+    Walks ``.claude/SuperchargeAI/memory/`` recursively, reads YAML
+    frontmatter from each ``.md`` file, and groups entries by category
+    (subdirectory path relative to ``memory/``).
+
+    Returns::
+
+        {"categories": {"project": [{"path": "project/foo.md", ...}], ...}}
+    """
+    sa_root = _resolve_sa_root(project_dir)
+    memory_root = sa_root / "memory"
+    categories: dict[str, list[dict]] = {}
+
+    if not memory_root.is_dir():
+        return {"categories": categories}
+
+    for md_file in sorted(memory_root.rglob("*.md")):
+        if not md_file.is_file():
+            continue
+        rel = md_file.relative_to(memory_root)
+        # Category is the first directory component, or "root" for top-level
+        parts = rel.parts
+        category = parts[0] if len(parts) > 1 else "root"
+
+        fm = _read_frontmatter(md_file)
+        entry: dict = {
+            "path": str(rel),
+            "title": fm.get("title", md_file.stem),
+            "keywords": _parse_keywords(fm.get("keywords", "")),
+            "created": fm.get("created", ""),
+            "updated": fm.get("updated", ""),
+            "preview": _extract_preview(md_file),
+        }
+        categories.setdefault(category, []).append(entry)
+
+    return {"categories": categories}
+
+
+def _read_memory_content(rel_path: str, project_dir: Path | None = None) -> dict | None:
+    """Read the full content of a memory file by relative path.
+
+    Validates that the path stays within the memory directory to prevent
+    directory traversal. Returns ``None`` if the file doesn't exist or
+    the path escapes the memory root.
+
+    Returns::
+
+        {"path": "...", "title": "...", "keywords": [...], "content": "..."}
+    """
+    sa_root = _resolve_sa_root(project_dir)
+    memory_root = sa_root / "memory"
+
+    # Resolve and validate path stays within memory_root
+    target = (memory_root / rel_path).resolve()
+    try:
+        target.relative_to(memory_root.resolve())
+    except ValueError:
+        return None
+
+    if not target.is_file():
+        return None
+
+    fm = _read_frontmatter(target)
+
+    # Read content after frontmatter
+    content_lines: list[str] = []
+    try:
+        with target.open() as f:
+            first_line = f.readline()
+            if first_line.strip() == "---":
+                # Skip frontmatter block
+                for line in f:
+                    if line.strip() == "---":
+                        break
+                content_lines = f.readlines()
+            else:
+                # No frontmatter — include the first line
+                content_lines = [first_line] + f.readlines()
+    except OSError:
+        return None
+
+    return {
+        "path": rel_path,
+        "title": fm.get("title", Path(rel_path).stem),
+        "keywords": _parse_keywords(fm.get("keywords", "")),
+        "content": "".join(content_lines).strip(),
+    }
+
+
+def _extract_task_title(task_md: Path) -> str:
+    """Extract task title from the first line after ``# Task`` heading."""
+    try:
+        with task_md.open() as f:
+            found_heading = False
+            for line in f:
+                stripped = line.strip()
+                if stripped == "# Task":
+                    found_heading = True
+                    continue
+                if found_heading:
+                    if not stripped:
+                        continue
+                    return stripped
+        return ""
+    except OSError:
+        return ""
+
+
+def _build_tasks_response(project_dir: Path | None = None) -> dict:
+    """Build a structured task listing from active tasks and archive.
+
+    Returns::
+
+        {
+            "active": {"plan": [...], "code": [...]},
+            "archived": [...]
+        }
+
+    Each entry has ``uuid``, ``agent_type``, ``created_at``, ``title``,
+    ``status`` (``"completed"`` or ``"pending"``), and ``has_result``.
+    """
+    sa_root = _resolve_sa_root(project_dir)
+    active: dict[str, list[dict]] = {}
+    archived: list[dict] = []
+
+    # Scan active tasks
+    tasks_dir = sa_root / "tasks"
+    if tasks_dir.is_dir():
+        for agent_dir in sorted(tasks_dir.iterdir()):
+            if not agent_dir.is_dir() or agent_dir.name.startswith("."):
+                continue
+            agent_type = agent_dir.name
+            entries: list[dict] = []
+            for task_folder in sorted(agent_dir.iterdir()):
+                if not task_folder.is_dir() or task_folder.name.startswith("."):
+                    continue
+                summary = _read_task_summary(task_folder)
+                if not summary:
+                    continue
+                has_result = (task_folder / "result.md").is_file()
+                entries.append({
+                    "uuid": summary["task_uuid"],
+                    "agent_type": summary.get("agent_type", agent_type),
+                    "created_at": summary.get("created_at", ""),
+                    "title": _extract_task_title(task_folder / "task.md"),
+                    "status": "completed" if has_result else "pending",
+                    "has_result": has_result,
+                })
+            if entries:
+                active[agent_type] = entries
+
+    # Scan archive
+    archive_dir = sa_root / "archive"
+    if archive_dir.is_dir():
+        for task_folder in sorted(archive_dir.iterdir()):
+            if not task_folder.is_dir() or task_folder.name.startswith("."):
+                continue
+            summary = _read_task_summary(task_folder)
+            if not summary:
+                continue
+            has_result = (task_folder / "result.md").is_file()
+            archived.append({
+                "uuid": summary["task_uuid"],
+                "agent_type": summary.get("agent_type", ""),
+                "created_at": summary.get("created_at", ""),
+                "title": _extract_task_title(task_folder / "task.md"),
+                "status": "completed" if has_result else "pending",
+                "has_result": has_result,
+            })
+
+    return {"active": active, "archived": archived}

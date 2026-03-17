@@ -6,6 +6,9 @@ from pathlib import Path
 
 from supercharge.browse import (
     _build_browse_response,
+    _build_memories_response,
+    _build_tasks_response,
+    _read_memory_content,
     _read_task_summary,
     _read_worker_summary,
     _walk_tree,
@@ -329,3 +332,242 @@ class TestBuildBrowseResponse:
         assert resp["tasks"] == {}
         assert resp["archive"] == []
         assert resp["tree"] is None
+
+
+# ── _build_memories_response ─────────────────────────────────────────────
+
+
+class TestBuildMemoriesResponse:
+    """Test _build_memories_response with various memory directory layouts."""
+
+    def _make_memory(self, root: Path, rel_path: str, content: str) -> None:
+        """Create a memory file at the given relative path under memory/."""
+        mem_root = root / ".claude" / "SuperchargeAI" / "memory"
+        full = mem_root / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content)
+
+    def test_realistic_memory_dir(self, tmp_path: Path):
+        self._make_memory(tmp_path, "project/db-gotchas.md", (
+            "---\n"
+            "title: Database gotchas\n"
+            "keywords: [postgres, migrations]\n"
+            "created: 2026-01-01\n"
+            "updated: 2026-02-15\n"
+            "---\n\n"
+            "# Content\n\n"
+            "Always run migrations in a transaction.\n"
+        ))
+        self._make_memory(tmp_path, "project/api-patterns.md", (
+            "---\n"
+            "title: API patterns\n"
+            "keywords: [rest, validation]\n"
+            "created: 2026-01-10\n"
+            "updated: 2026-01-10\n"
+            "---\n\n"
+            "# Content\n\n"
+            "Use Pydantic for request validation.\n"
+        ))
+        self._make_memory(tmp_path, "methodology/behavior/no-force-push.md", (
+            "---\n"
+            "title: No force push\n"
+            "keywords: [git, safety]\n"
+            "created: 2026-01-05\n"
+            "updated: 2026-01-05\n"
+            "---\n\n"
+            "# Content\n\n"
+            "Never force push to main.\n"
+        ))
+
+        resp = _build_memories_response(project_dir=tmp_path)
+        cats = resp["categories"]
+        assert "project" in cats
+        assert "methodology" in cats
+        assert len(cats["project"]) == 2
+        assert len(cats["methodology"]) == 1
+
+        # Verify entry fields
+        entry = cats["project"][0]  # api-patterns.md (sorted)
+        assert entry["title"] == "API patterns"
+        assert entry["keywords"] == ["rest", "validation"]
+        assert entry["created"] == "2026-01-10"
+        assert "path" in entry
+        assert "preview" in entry
+
+    def test_empty_memory_dir(self, tmp_path: Path):
+        mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
+        mem.mkdir(parents=True)
+
+        resp = _build_memories_response(project_dir=tmp_path)
+        assert resp["categories"] == {}
+
+    def test_no_memory_dir(self, tmp_path: Path):
+        resp = _build_memories_response(project_dir=tmp_path)
+        assert resp["categories"] == {}
+
+    def test_malformed_frontmatter(self, tmp_path: Path):
+        self._make_memory(tmp_path, "project/broken.md",
+                          "No frontmatter here, just content.\n")
+
+        resp = _build_memories_response(project_dir=tmp_path)
+        cats = resp["categories"]
+        assert "project" in cats
+        entry = cats["project"][0]
+        # Falls back to stem for title
+        assert entry["title"] == "broken"
+        assert entry["keywords"] == []
+
+    def test_category_grouping_top_level(self, tmp_path: Path):
+        """Top-level files (not in a subdirectory) go into 'root' category."""
+        self._make_memory(tmp_path, "index.md", (
+            "---\n"
+            "title: Memory Index\n"
+            "keywords: [index]\n"
+            "created: 2026-01-01\n"
+            "updated: 2026-01-01\n"
+            "---\n\n"
+            "Top-level memory file.\n"
+        ))
+
+        resp = _build_memories_response(project_dir=tmp_path)
+        assert "root" in resp["categories"]
+        assert resp["categories"]["root"][0]["title"] == "Memory Index"
+
+
+# ── _build_tasks_response ────────────────────────────────────────────────
+
+
+class TestBuildTasksResponse:
+    """Test _build_tasks_response with active and archived tasks."""
+
+    def _make_task(self, root: Path, agent_type: str, uuid: str,
+                   title: str = "Do something", has_result: bool = False,
+                   archived: bool = False) -> None:
+        """Create a task folder with task.md and optionally result.md."""
+        sa = root / ".claude" / "SuperchargeAI"
+        if archived:
+            task_dir = sa / "archive" / uuid
+        else:
+            task_dir = sa / "tasks" / agent_type / uuid
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "task.md").write_text(
+            "---\n"
+            f"task_uuid: {uuid}\n"
+            f"agent_type: {agent_type}\n"
+            "created_at: 2026-01-01T00:00:00+00:00\n"
+            "created_by: user\n"
+            "---\n\n"
+            "# Task\n\n"
+            f"{title}\n"
+        )
+        if has_result:
+            (task_dir / "result.md").write_text("# Result\n\nDone.\n")
+
+    def test_active_and_archived_grouping(self, tmp_path: Path):
+        self._make_task(tmp_path, "plan", "p1", "Plan it")
+        self._make_task(tmp_path, "code", "c1", "Code it", has_result=True)
+        self._make_task(tmp_path, "code", "c-old", "Old code", archived=True, has_result=True)
+
+        resp = _build_tasks_response(project_dir=tmp_path)
+        assert "plan" in resp["active"]
+        assert "code" in resp["active"]
+        assert len(resp["archived"]) == 1
+        assert resp["archived"][0]["uuid"] == "c-old"
+
+    def test_status_detection(self, tmp_path: Path):
+        self._make_task(tmp_path, "code", "done1", "Done task", has_result=True)
+        self._make_task(tmp_path, "code", "pend1", "Pending task", has_result=False)
+
+        resp = _build_tasks_response(project_dir=tmp_path)
+        entries = resp["active"]["code"]
+        by_uuid = {e["uuid"]: e for e in entries}
+        assert by_uuid["done1"]["status"] == "completed"
+        assert by_uuid["done1"]["has_result"] is True
+        assert by_uuid["pend1"]["status"] == "pending"
+        assert by_uuid["pend1"]["has_result"] is False
+
+    def test_title_extraction(self, tmp_path: Path):
+        self._make_task(tmp_path, "plan", "t1", "Implement user authentication")
+
+        resp = _build_tasks_response(project_dir=tmp_path)
+        entry = resp["active"]["plan"][0]
+        assert entry["title"] == "Implement user authentication"
+
+    def test_empty_project(self, tmp_path: Path):
+        resp = _build_tasks_response(project_dir=tmp_path)
+        assert resp["active"] == {}
+        assert resp["archived"] == []
+
+    def test_entry_has_expected_fields(self, tmp_path: Path):
+        self._make_task(tmp_path, "code", "f1", "Check fields")
+
+        resp = _build_tasks_response(project_dir=tmp_path)
+        entry = resp["active"]["code"][0]
+        for key in ("uuid", "agent_type", "created_at", "title", "status", "has_result"):
+            assert key in entry, f"Missing key: {key}"
+
+
+# ── _read_memory_content ─────────────────────────────────────────────────
+
+
+class TestReadMemoryContent:
+    """Test _read_memory_content with various file states."""
+
+    def _make_memory(self, root: Path, rel_path: str, content: str) -> None:
+        mem_root = root / ".claude" / "SuperchargeAI" / "memory"
+        full = mem_root / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content)
+
+    def test_valid_file(self, tmp_path: Path):
+        self._make_memory(tmp_path, "project/patterns.md", (
+            "---\n"
+            "title: Patterns\n"
+            "keywords: [design, arch]\n"
+            "created: 2026-01-01\n"
+            "updated: 2026-01-01\n"
+            "---\n\n"
+            "# Content\n\n"
+            "Use dependency injection.\n"
+        ))
+
+        result = _read_memory_content("project/patterns.md", project_dir=tmp_path)
+        assert result is not None
+        assert result["path"] == "project/patterns.md"
+        assert result["title"] == "Patterns"
+        assert result["keywords"] == ["design", "arch"]
+        assert "Use dependency injection." in result["content"]
+
+    def test_nonexistent_file(self, tmp_path: Path):
+        # Ensure memory dir exists but file doesn't
+        mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
+        mem.mkdir(parents=True)
+
+        result = _read_memory_content("project/missing.md", project_dir=tmp_path)
+        assert result is None
+
+    def test_file_without_frontmatter(self, tmp_path: Path):
+        self._make_memory(tmp_path, "project/plain.md",
+                          "Just plain content, no frontmatter.\n")
+
+        result = _read_memory_content("project/plain.md", project_dir=tmp_path)
+        assert result is not None
+        assert result["title"] == "plain"  # falls back to stem
+        assert result["keywords"] == []
+        assert "Just plain content" in result["content"]
+
+    def test_path_traversal_prevention(self, tmp_path: Path):
+        # Create the memory dir so the root resolves
+        mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
+        mem.mkdir(parents=True)
+
+        # Try to escape via ../
+        result = _read_memory_content("../../etc/passwd", project_dir=tmp_path)
+        assert result is None
+
+    def test_path_traversal_with_embedded_dotdot(self, tmp_path: Path):
+        mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
+        mem.mkdir(parents=True)
+
+        result = _read_memory_content("project/../../../etc/passwd", project_dir=tmp_path)
+        assert result is None

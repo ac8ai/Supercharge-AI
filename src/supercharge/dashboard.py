@@ -289,6 +289,27 @@ async def _handle_browse(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
+async def _handle_browse_memories(request: Request) -> JSONResponse:
+    """Return categorised memory file listing."""
+    data = browse._build_memories_response()
+    return JSONResponse(data)
+
+
+async def _handle_browse_memory_content(request: Request) -> JSONResponse:
+    """Return full content of a single memory file."""
+    rel_path = request.path_params["path"]
+    data = browse._read_memory_content(rel_path)
+    if data is None:
+        return JSONResponse({"error": "Memory file not found"}, status_code=404)
+    return JSONResponse(data)
+
+
+async def _handle_browse_tasks(request: Request) -> JSONResponse:
+    """Return structured task listing (active + archived)."""
+    data = browse._build_tasks_response()
+    return JSONResponse(data)
+
+
 async def _handle_agent_tokens(request: Request) -> JSONResponse:
     """Return per-agent token stats for a session (lazily parsed)."""
     session_id = request.path_params["session_id"]
@@ -480,6 +501,9 @@ def _create_app() -> Starlette:
         Route("/api/events", _handle_events, methods=["GET"]),
         Route("/api/events/stream", _handle_events_stream, methods=["GET"]),
         Route("/api/browse", _handle_browse, methods=["GET"]),
+        Route("/api/browse/memories", _handle_browse_memories, methods=["GET"]),
+        Route("/api/browse/memories/{path:path}", _handle_browse_memory_content, methods=["GET"]),
+        Route("/api/browse/tasks", _handle_browse_tasks, methods=["GET"]),
         Route("/api/tasks/{task_uuid}/content", _handle_task_content, methods=["GET"]),
         Route("/api/tasks/find", _handle_find_task, methods=["GET"]),
         Route("/api/projects", _handle_projects, methods=["GET"]),
