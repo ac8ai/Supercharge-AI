@@ -611,7 +611,15 @@ def subtask_init(
 
     # Resolve max_turns from env (optional)
     max_turns_str = os.environ.get("SUPERCHARGE_MAX_TURNS")
-    max_turns = int(max_turns_str) if max_turns_str else None
+    if max_turns_str:
+        try:
+            max_turns = int(max_turns_str)
+        except ValueError:
+            raise click.ClickException(
+                f"SUPERCHARGE_MAX_TURNS must be an integer, got {max_turns_str!r}"
+            )
+    else:
+        max_turns = None
 
     fast = _is_fast_mode(model)
 

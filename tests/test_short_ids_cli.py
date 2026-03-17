@@ -424,3 +424,25 @@ class TestSubtaskInitOutput:
         data = json.loads(result.output.strip())
         assert len(data["worker_id"]) == 8
         assert data["worker_id"] == "11111111"
+
+
+class TestMaxTurnsValidation:
+    def test_invalid_max_turns_gives_clean_error(self, tmp_path: Path):
+        """Non-numeric SUPERCHARGE_MAX_TURNS produces a ClickException, not a traceback."""
+        full_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_root = tmp_path / "tasks"
+        task_dir = _make_task_folder(task_root, "code", full_uuid)
+
+        runner = CliRunner(env={"SUPERCHARGE_MAX_TURNS": "not_a_number"})
+        with (
+            patch("supercharge.cli._task_root", return_value=task_root),
+            patch("supercharge.paths._task_root", return_value=task_root),
+            patch("supercharge.cli._find_task_dir", return_value=task_dir),
+            patch("supercharge.cli._resolve_prefix"),
+        ):
+            result = runner.invoke(
+                supercharge,
+                ["subtask", "init", "code", "do stuff", "--task-uuid", full_uuid],
+            )
+        assert result.exit_code != 0
+        assert "SUPERCHARGE_MAX_TURNS must be an integer" in result.output
