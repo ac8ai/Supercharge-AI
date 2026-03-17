@@ -12,6 +12,11 @@ fi
 
 SUPERCHARGE_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
+# Auto-update local (git-based) installs
+if [ -d "${SUPERCHARGE_ROOT}/.git" ]; then
+    git -C "$SUPERCHARGE_ROOT" pull --ff-only 2>/dev/null || true
+fi
+
 # Read plugin version from plugin.json
 PLUGIN_VERSION=""
 if [ -f "${SUPERCHARGE_ROOT}/.claude-plugin/plugin.json" ]; then

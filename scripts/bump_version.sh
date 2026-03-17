@@ -16,9 +16,18 @@ set -euo pipefail
 
 NEW_VERSION="${1:?Usage: bump_version.sh <new_version>}"
 
-# Validate semver format (loose check)
-if ! echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
-    echo "Error: '$NEW_VERSION' doesn't look like a valid semver (e.g., 0.2.0)" >&2
+# Catch SemVer pre-release format and suggest PEP 440 equivalent
+if echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc|dev)'; then
+    echo "Error: SemVer pre-release format detected. Use PEP 440 format instead:" >&2
+    echo "  0.4.0-beta.1  ->  0.4.0b1" >&2
+    echo "  0.4.0-alpha.2 ->  0.4.0a2" >&2
+    echo "  0.4.0-rc.1    ->  0.4.0rc1" >&2
+    exit 1
+fi
+
+# Validate PEP 440 version format
+if ! echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(a[0-9]+|b[0-9]+|rc[0-9]+|\.dev[0-9]+)?$'; then
+    echo "Error: '$NEW_VERSION' is not a valid PEP 440 version (e.g., 0.4.0, 0.4.0b1, 0.4.0rc1)" >&2
     exit 1
 fi
 
@@ -79,4 +88,8 @@ echo "Next steps:"
 echo "  1. git add pyproject.toml .claude-plugin/plugin.json .claude-plugin/marketplace.json uv.lock"
 echo "  2. git commit -m \"Bump version to $NEW_VERSION\""
 echo "  3. git tag v$NEW_VERSION"
-echo "  4. Publish to PyPI: uv build && uv publish"
+echo "  4. git push && git push --tags"
+if echo "$NEW_VERSION" | grep -qE '[ab][0-9]|rc[0-9]|\.dev[0-9]'; then
+    echo ""
+    echo "  Note: This is a pre-release version. The GitHub Release will be marked as pre-release."
+fi
