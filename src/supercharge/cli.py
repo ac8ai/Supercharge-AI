@@ -336,12 +336,24 @@ def task_init(agent_type: str, author: str | None, name: str, print_full: bool):
 
 @task.command("cleanup")
 @click.argument("task_uuids", nargs=-1, required=True)
-def task_cleanup(task_uuids: tuple[str, ...]):
+@click.option(
+    "--agent-type",
+    required=True,
+    help="Agent type invoking this command (must be 'memory')",
+)
+def task_cleanup(task_uuids: tuple[str, ...], agent_type: str):
     """Safely delete task folders after memory harvesting.
 
     Accepts full UUIDs, short prefixes, or folder names. Confirms the path
     is inside .claude/SuperchargeAI/tasks/ before removing. Accepts multiple IDs.
+
+    Restricted to the memory agent to ensure learnings are harvested before deletion.
     """
+    if agent_type != "memory":
+        raise click.ClickException(
+            "task cleanup can only be run by the memory agent "
+            "(--agent-type memory)"
+        )
     import shutil
 
     for task_uuid in task_uuids:
@@ -382,13 +394,25 @@ def task_cleanup(task_uuids: tuple[str, ...]):
 @click.argument("task_uuids", nargs=-1, required=True)
 @click.option("--title", default=None, help="Archive title (default: from task.md)")
 @click.option("--force", is_flag=True, default=False, help="Archive even if result.md is missing")
-def task_archive(task_uuids: tuple[str, ...], title: str | None, force: bool):
+@click.option(
+    "--agent-type",
+    required=True,
+    help="Agent type invoking this command (must be 'memory')",
+)
+def task_archive(task_uuids: tuple[str, ...], title: str | None, force: bool, agent_type: str):
     """Archive research/plan task folders to .claude/SuperchargeAI/archive/.
 
     Extracts the Report section from result.md, writes an archive file with
     YAML frontmatter, and removes the original task directory.
     Accepts full UUIDs, short prefixes, or folder names for batch operation.
+
+    Restricted to the memory agent to ensure learnings are harvested before archiving.
     """
+    if agent_type != "memory":
+        raise click.ClickException(
+            "task archive can only be run by the memory agent "
+            "(--agent-type memory)"
+        )
     import shutil
 
     for task_uuid in task_uuids:

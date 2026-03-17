@@ -54,7 +54,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_root / "plan" / task_uuid),
             patch("supercharge.cli._archive_root", return_value=archive_root),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         assert result.exit_code == 0, result.output
         # Archive file should exist
@@ -83,7 +83,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_root / "research" / task_uuid),
             patch("supercharge.cli._archive_root", return_value=archive_root),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         assert result.exit_code == 0, result.output
         archive_files = list(archive_root.glob("*.md"))
@@ -106,7 +106,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_dir),
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         assert "research/plan" in result.output.lower() or "research/plan" in (result.output + getattr(result, 'stderr', '')).lower()
         # Task dir should still exist (not archived)
@@ -128,7 +128,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_dir),
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         # Should report error about missing result.md
         assert "result.md" in result.output.lower() or result.exit_code != 0
@@ -151,7 +151,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_dir),
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", "--force", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", "--force", task_uuid])
 
         assert result.exit_code == 0, result.output
         archive_files = list((tmp_path / "archive").glob("*.md"))
@@ -184,7 +184,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_dir),
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         assert result.exit_code == 0, result.output
         archive_files = list((tmp_path / "archive").glob("*.md"))
@@ -208,7 +208,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_root / "plan" / task_uuid),
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         assert result.exit_code == 0, result.output
         archive_files = list((tmp_path / "archive").glob("*.md"))
@@ -231,7 +231,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", return_value=task_root / "plan" / task_uuid),
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", "--title", "custom", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", "--title", "custom", task_uuid])
 
         assert result.exit_code == 0, result.output
         archive_files = list((tmp_path / "archive").glob("*.md"))
@@ -258,7 +258,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", side_effect=mock_find),
             patch("supercharge.cli._archive_root", return_value=archive_root),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", uuid1, uuid2])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", uuid1, uuid2])
 
         assert result.exit_code == 0, result.output
         archive_files = list(archive_root.glob("*.md"))
@@ -288,7 +288,7 @@ class TestTaskArchive:
             patch("supercharge.cli._find_task_dir", side_effect=mock_find),
             patch("supercharge.cli._archive_root", return_value=archive_root),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", bad_uuid, good_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", bad_uuid, good_uuid])
 
         # Good one should be archived despite bad one failing
         archive_files = list(archive_root.glob("*.md"))
@@ -323,7 +323,7 @@ class TestTaskCleanupMultiUuid:
             patch("supercharge.cli._task_root", return_value=task_root),
             patch("supercharge.cli._find_task_dir", side_effect=mock_find),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", uuid1, uuid2])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", uuid1, uuid2])
 
         assert result.exit_code == 0, result.output
         assert not dir1.exists()
@@ -347,7 +347,7 @@ class TestTaskCleanupMultiUuid:
             patch("supercharge.cli._task_root", return_value=task_root),
             patch("supercharge.cli._find_task_dir", side_effect=mock_find),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", bad_uuid, good_uuid])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", bad_uuid, good_uuid])
 
         # Good one should still be deleted
         assert not good_dir.exists()

@@ -196,7 +196,7 @@ class TestTaskCleanupShortPrefix:
             patch("supercharge.paths._task_root", return_value=task_root),
             patch("supercharge.cli._emit"),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", "abcdef01"])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", "abcdef01"])
         assert result.exit_code == 0, result.output
         assert not task_dir.exists()
 
@@ -212,7 +212,7 @@ class TestTaskCleanupShortPrefix:
             patch("supercharge.paths._task_root", return_value=task_root),
             patch("supercharge.cli._emit"),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", "5b6d9c66"])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", "5b6d9c66"])
         assert result.exit_code == 0, result.output
         assert not task_dir.exists()
 
@@ -232,7 +232,7 @@ class TestTaskCleanupShortPrefix:
             patch("supercharge.paths._task_root", return_value=task_root),
             patch("supercharge.cli._emit"),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", "abcdef01"])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", "abcdef01"])
         assert "ambiguous" in result.output.lower() or "Ambiguous" in result.output
 
 
@@ -254,7 +254,7 @@ class TestTaskArchiveShortPrefix:
             patch("supercharge.cli._archive_root", return_value=archive_root),
             patch("supercharge.cli._emit"),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", "abcdef01"])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", "abcdef01"])
         assert result.exit_code == 0, result.output
         assert not task_dir.exists()
         archive_files = list(archive_root.glob("*.md"))

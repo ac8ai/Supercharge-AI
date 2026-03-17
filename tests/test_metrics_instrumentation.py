@@ -135,7 +135,7 @@ class TestHookSubagentStartEmit:
         assert event_type == "subagent_start"
         assert kwargs["session_id"] == "sess-xyz"
         assert kwargs["agent_id"] == "agent-001"
-        assert kwargs["agent_type"] == "supercharge-ai:code"
+        assert kwargs["agent_type"] == "code"  # normalized: supercharge-ai: prefix stripped
 
 
 # ── hook_pre_tool_use ────────────────────────────────────────────────────────
@@ -285,7 +285,7 @@ class TestTaskCleanupEmit:
             patch("supercharge.cli._task_root", return_value=tmp_path / "tasks"),
             patch("supercharge.cli._emit", spy),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", task_uuid])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", task_uuid])
 
         assert result.exit_code == 0
         assert len(calls) == 1
@@ -300,7 +300,7 @@ class TestTaskCleanupEmit:
         runner = CliRunner()
 
         with patch("supercharge.cli._emit", spy):
-            result = runner.invoke(supercharge, ["task", "cleanup", "not-a-uuid"])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", "not-a-uuid"])
 
         assert len(calls) == 0
 
@@ -329,7 +329,7 @@ class TestTaskArchiveEmit:
             patch("supercharge.cli._archive_root", return_value=tmp_path / "archive"),
             patch("supercharge.cli._emit", spy),
         ):
-            result = runner.invoke(supercharge, ["task", "archive", task_uuid])
+            result = runner.invoke(supercharge, ["task", "archive", "--agent-type", "memory", task_uuid])
 
         assert result.exit_code == 0
         assert len(calls) == 1
@@ -640,7 +640,7 @@ class TestNoEmitOnFailure:
             patch("supercharge.cli._find_task_dir", return_value=None),
             patch("supercharge.cli._emit", spy),
         ):
-            result = runner.invoke(supercharge, ["task", "cleanup", task_uuid])
+            result = runner.invoke(supercharge, ["task", "cleanup", "--agent-type", "memory", task_uuid])
 
         assert len(calls) == 0
 
