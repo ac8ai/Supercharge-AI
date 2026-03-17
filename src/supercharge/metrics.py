@@ -8,8 +8,11 @@ subprocesses with no shared state). Uses WAL mode for concurrent access.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sqlite3
 import sys
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,20 +27,21 @@ def _normalize_agent_type(raw: str) -> str:
 
 
 _COLUMNS = (
-    "session_id",
-    "agent_id",
-    "agent_type",
-    "task_uuid",
-    "worker_id",
-    "parent_id",
-    "tool_name",
-    "detail",
+    'session_id',
+    'agent_id',
+    'agent_type',
+    'task_uuid',
+    'worker_id',
+    'parent_id',
+    'tool_name',
+    'detail',
+    'project',
 )
 
 
 def _db_path() -> Path:
-    """Return path to the metrics database."""
-    return Path(_project_dir()) / ".claude" / "SuperchargeAI" / "metrics.db"
+    """Return path to the global metrics database (user-level)."""
+    return Path.home() / '.claude' / 'SuperchargeAI' / 'metrics.db'
 
 
 def _init_db(conn: sqlite3.Connection) -> None:
@@ -132,6 +136,34 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
         conn.commit()
 
+    if current < 4:
+        # Migration 4: Add project columns, projects table, and project indexes
+        # ALTER TABLE ADD COLUMN is not idempotent — use try/except for thread safety
+        for stmt in [
+            "ALTER TABLE events ADD COLUMN project TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE session_stats ADD COLUMN project TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE session_stats ADD COLUMN project_name TEXT NOT NULL DEFAULT ''",
+        ]:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # Column already exists (concurrent caller added it)
+        conn.executescript(
+            """\
+            CREATE TABLE IF NOT EXISTS projects (
+                project_path TEXT PRIMARY KEY,
+                project_slug TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                user_edited BOOLEAN NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
+            CREATE INDEX IF NOT EXISTS idx_session_stats_project ON session_stats(project);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
+        conn.commit()
+
 
 def _emit(event_type: str, **kwargs: str) -> None:
     """Fire-and-forget event emitter. Never raises."""
@@ -147,24 +179,34 @@ def _emit(event_type: str, **kwargs: str) -> None:
         _init_db(conn)
 
         ts = datetime.now(timezone.utc).isoformat()
-        values = {col: kwargs.get(col, "") for col in _COLUMNS}
+        values = {col: kwargs.get(col, '') for col in _COLUMNS}
+
+        # Auto-derive project from CWD/env if not explicitly provided
+        if not values['project']:
+            try:
+                values['project'] = _strip_task_folder(_project_dir())
+            except Exception:
+                pass
+        else:
+            values['project'] = _strip_task_folder(values['project'])
 
         conn.execute(
-            "INSERT INTO events (timestamp, event_type, "
-            "session_id, agent_id, agent_type, task_uuid, "
-            "worker_id, parent_id, tool_name, detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            'INSERT INTO events (timestamp, event_type, '
+            'session_id, agent_id, agent_type, task_uuid, '
+            'worker_id, parent_id, tool_name, detail, project) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (
                 ts,
                 event_type,
-                values["session_id"],
-                values["agent_id"],
-                values["agent_type"],
-                values["task_uuid"],
-                values["worker_id"],
-                values["parent_id"],
-                values["tool_name"],
-                values["detail"],
+                values['session_id'],
+                values['agent_id'],
+                values['agent_type'],
+                values['task_uuid'],
+                values['worker_id'],
+                values['parent_id'],
+                values['tool_name'],
+                values['detail'],
+                values['project'],
             ),
         )
         conn.commit()
@@ -724,6 +766,26 @@ def _query_sessions() -> list[dict]:
                     "agent_types": agent_types,
                 }
             )
+        # Enrich results with project and project_name from session_stats
+        if results:
+            try:
+                sids = [r["session_id"] for r in results]
+                placeholders = ",".join("?" for _ in sids)
+                proj_rows = conn.execute(
+                    f"SELECT session_id, project, project_name FROM session_stats "
+                    f"WHERE session_id IN ({placeholders})",
+                    sids,
+                ).fetchall()
+                proj_map: dict[str, tuple[str, str]] = {
+                    r["session_id"]: (r["project"] or "", r["project_name"] or "")
+                    for r in proj_rows
+                }
+            except Exception:
+                proj_map = {}
+            for result in results:
+                proj, proj_name = proj_map.get(result["session_id"], ("", ""))
+                result["project"] = proj
+                result["project_name"] = proj_name
         return results
     except Exception:
         return []
@@ -881,22 +943,157 @@ def _open_readwrite() -> sqlite3.Connection:
     return conn
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _strip_task_folder(path: str) -> str:
+    """Strip SuperchargeAI task folder suffix to get the real project path.
+
+    Agent subprocesses run with CWD set to their task folder, e.g.
+    /workspaces/MyProject/.claude/SuperchargeAI/tasks/code/abc123
+    This strips to /workspaces/MyProject.
+    """
+    idx = path.find('/.claude/SuperchargeAI/')
+    if idx > 0:
+        return path[:idx]
+    return path
+
+
+def _is_junk_project_path(path: str) -> bool:
+    """Return True for paths that should not be tracked as real projects.
+
+    Filters out SuperchargeAI task folders and temporary directories so they
+    are never stored as projects in the DB.
+    """
+    if '/.claude/SuperchargeAI/' in path:
+        return True
+    if path.startswith('/tmp/'):
+        return True
+    return False
+
+
 # ── JSONL parser ─────────────────────────────────────────────────────────────
 
 
 def _find_session_jsonl(session_id: str) -> Path | None:
-    """Locate the JSONL transcript file for a session.
+    """Locate the JSONL transcript file for a session across all projects.
 
-    Returns the Path if found, None otherwise. The JSONL lives at:
-    ``_user_config_dir() / "projects" / project_slug / f"{session_id}.jsonl"``
-    where project_slug encodes the project directory by replacing ``/`` with ``-``
-    (matches the pattern in hooks.py ``_ensure_project_dir``).
+    Scans all slug directories in ~/.claude/projects/ for the session's
+    JSONL file, checking most recently modified directories first for efficiency.
+
+    Returns the Path if found, None otherwise.
     """
-    project_slug = _project_dir().replace("/", "-")
-    jsonl_path = _user_config_dir() / "projects" / project_slug / f"{session_id}.jsonl"
-    if jsonl_path.is_file():
-        return jsonl_path
+    projects_dir = _user_config_dir() / 'projects'
+    if not projects_dir.is_dir():
+        return None
+
+    # Collect slug dirs sorted by modification time (most recent first)
+    try:
+        slug_dirs = sorted(
+            (d for d in projects_dir.iterdir() if d.is_dir()),
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    for slug_dir in slug_dirs:
+        jsonl_path = slug_dir / f'{session_id}.jsonl'
+        if jsonl_path.is_file():
+            return jsonl_path
+
     return None
+
+
+def _vote_session_project(session_id: str) -> str | None:
+    """Determine which project a session belongs to by voting on CWD values.
+
+    Reads cwd values from messages in the session's JSONL file with early
+    settlement rules:
+    - Rule 1: 5 consecutive identical CWDs with no other CWD ever seen -> settled
+    - Rule 2: After 20 votes, if one CWD has >80% share -> settled
+    - Rule 3: After 50 messages max, return the most frequent CWD
+
+    Returns the winning CWD path, or None if no CWD found.
+    """
+    jsonl_path = _find_session_jsonl(session_id)
+    if jsonl_path is None:
+        return None
+
+    from collections import Counter
+    cwd_counts: Counter[str] = Counter()
+    consecutive_count = 0
+    last_cwd: str | None = None
+    total_votes = 0
+
+    try:
+        with jsonl_path.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                cwd = entry.get('cwd')
+                if not cwd or not isinstance(cwd, str):
+                    continue
+
+                total_votes += 1
+                cwd_counts[cwd] += 1
+
+                # Track consecutive same CWDs
+                if cwd == last_cwd:
+                    consecutive_count += 1
+                else:
+                    consecutive_count = 1
+                    last_cwd = cwd
+
+                # Rule 1: 5 consecutive identical with no other CWD ever seen
+                if consecutive_count >= 5 and len(cwd_counts) == 1:
+                    return cwd
+
+                # Rule 2: After 20 votes, >80% share
+                if total_votes >= 20:
+                    top_cwd, top_count = cwd_counts.most_common(1)[0]
+                    if top_count / total_votes > 0.8:
+                        return top_cwd
+
+                # Rule 3: Stop after 50 messages
+                if total_votes >= 50:
+                    return cwd_counts.most_common(1)[0][0]
+    except Exception:
+        pass
+
+    if not cwd_counts:
+        # Fallback: derive project from JSONL file path
+        # Path is ~/.claude/projects/<slug>/<session>.jsonl
+        # Claude's slug replaces / . and other chars with -, so reversal is lossy.
+        # Match against known project slugs in the DB instead.
+        if jsonl_path is not None:
+            slug = jsonl_path.parent.name
+            # Strip task subfolder suffixes
+            base_slug = slug.split("--claude-")[0] if "--claude-" in slug else slug
+            try:
+                conn = _open_readonly()
+                if conn:
+                    rows = conn.execute(
+                        "SELECT project_path, project_slug FROM projects"
+                    ).fetchall()
+                    conn.close()
+                    for row in rows:
+                        db_slug = row["project_slug"]
+                        # Claude's slug also replaces dots with hyphens
+                        db_slug_normalized = db_slug.replace(".", "-")
+                        if db_slug in (slug, base_slug) or db_slug_normalized in (slug, base_slug):
+                            return row["project_path"]
+            except Exception:
+                pass
+        return None
+
+    return cwd_counts.most_common(1)[0][0]
 
 
 def _parse_session_jsonl(session_id: str, start_line: int = 0) -> dict:
@@ -986,6 +1183,157 @@ def _parse_session_jsonl(session_id: str, start_line: int = 0) -> dict:
     return result
 
 
+def _resolve_project_name(project_path: str) -> str:
+    """Resolve a human-readable display name for the given project path.
+
+    Checks project metadata files in order:
+    1. .devcontainer/devcontainer.json → ``name`` field
+    2. pyproject.toml → ``[project] name`` (tomllib)
+    3. package.json → ``name`` field
+    4. Cargo.toml → ``[package] name`` (tomllib)
+    5. go.mod → module name (last path component after ``/``)
+
+    Falls back to humanizing the last path component of *project_path*:
+    - camelCase → space-separated words
+    - underscores / hyphens → title-cased words
+    """
+    base = Path(project_path)
+
+    # 1. .devcontainer/devcontainer.json → name
+    try:
+        p = base / ".devcontainer" / "devcontainer.json"
+        if p.is_file():
+            data = json.loads(p.read_text())
+            name = data.get("name", "")
+            if name:
+                return str(name)
+    except Exception:
+        pass
+
+    # 2. pyproject.toml → [project] name
+    try:
+        p = base / "pyproject.toml"
+        if p.is_file():
+            with p.open("rb") as f:
+                data = tomllib.load(f)
+            name = data.get("project", {}).get("name", "")
+            if name:
+                return str(name)
+    except Exception:
+        pass
+
+    # 3. package.json → name
+    try:
+        p = base / "package.json"
+        if p.is_file():
+            data = json.loads(p.read_text())
+            name = data.get("name", "")
+            if name:
+                return str(name)
+    except Exception:
+        pass
+
+    # 4. Cargo.toml → [package] name
+    try:
+        p = base / "Cargo.toml"
+        if p.is_file():
+            with p.open("rb") as f:
+                data = tomllib.load(f)
+            name = data.get("package", {}).get("name", "")
+            if name:
+                return str(name)
+    except Exception:
+        pass
+
+    # 5. go.mod → module name (last path component)
+    try:
+        p = base / "go.mod"
+        if p.is_file():
+            first_line = p.read_text().splitlines()[0]
+            if first_line.startswith("module "):
+                module_name = first_line[len("module "):].strip()
+                name = module_name.split("/")[-1]
+                if name:
+                    return name
+    except Exception:
+        pass
+
+    # Fallback: humanize the directory name
+    dir_name = os.path.basename(project_path.rstrip("/\\"))
+    if not dir_name:
+        return project_path
+    # Split on camelCase boundaries
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", dir_name)
+    # Split on underscores, hyphens, and whitespace; title-case each part
+    parts = re.split(r"[_\-\s]+", s)
+    return " ".join(part.title() for part in parts if part)
+
+
+def _get_or_create_project(conn: sqlite3.Connection, project_path: str) -> dict:
+    """Ensure *project_path* has an entry in the ``projects`` table.
+
+    - Creates a new entry if missing, resolving ``display_name`` via
+      :func:`_resolve_project_name`.
+    - Re-resolves ``display_name`` when ``user_edited=0`` and ``last_updated``
+      is more than 24 hours old.
+    - Never overwrites ``display_name`` when ``user_edited=1``.
+
+    Returns a dict with ``project_path``, ``project_slug``, ``display_name``.
+    """
+    now = datetime.now(timezone.utc)
+    result: dict = {
+        "project_path": project_path,
+        "project_slug": project_path.replace("/", "-"),
+        "display_name": "",
+    }
+    if _is_junk_project_path(project_path):
+        return result
+    try:
+        row = conn.execute(
+            "SELECT * FROM projects WHERE project_path = ?", (project_path,)
+        ).fetchone()
+
+        if row is None:
+            # New project: resolve name and insert
+            display_name = _resolve_project_name(project_path)
+            project_slug = project_path.replace("/", "-")
+            conn.execute(
+                """\
+                INSERT INTO projects (project_path, project_slug, display_name, user_edited, last_updated)
+                VALUES (?, ?, ?, 0, ?)
+                """,
+                (project_path, project_slug, display_name, now.isoformat()),
+            )
+            conn.commit()
+            result["display_name"] = display_name
+        else:
+            result["project_slug"] = row["project_slug"]
+            result["display_name"] = row["display_name"]
+            # Re-resolve if not user-edited and last_updated is stale (>24h)
+            if not row["user_edited"]:
+                try:
+                    last_updated = datetime.fromisoformat(row["last_updated"])
+                    if last_updated.tzinfo is None:
+                        last_updated = last_updated.replace(tzinfo=timezone.utc)
+                    age_seconds = (now - last_updated).total_seconds()
+                except (ValueError, TypeError):
+                    age_seconds = float("inf")
+                if age_seconds > 86400:
+                    display_name = _resolve_project_name(project_path)
+                    conn.execute(
+                        """\
+                        UPDATE projects SET display_name = ?, last_updated = ?
+                        WHERE project_path = ?
+                        """,
+                        (display_name, now.isoformat(), project_path),
+                    )
+                    conn.commit()
+                    result["display_name"] = display_name
+    except Exception:
+        pass
+    return result
+
+
 def _update_session_stats(session_id: str) -> None:
     """Parse JSONL incrementally and upsert session_stats row. Never raises."""
     conn: sqlite3.Connection | None = None
@@ -1007,9 +1355,24 @@ def _update_session_stats(session_id: str) -> None:
 
         parsed = _parse_session_jsonl(session_id, start_line=start_line)
 
-        # If no new lines were parsed, skip the upsert
-        if parsed["last_parsed_line"] <= start_line and not parsed["custom_name"] and not parsed.get("first_user_message"):
+        # Determine project: use existing value, or vote from JSONL CWDs
+        existing_project = row['project'] if row else ''
+
+        # If no new lines were parsed, skip — unless project is empty (re-vote)
+        no_new_data = parsed["last_parsed_line"] <= start_line and not parsed["custom_name"] and not parsed.get("first_user_message")
+        if no_new_data and existing_project:
             return
+        if existing_project:
+            project_path = _strip_task_folder(existing_project)
+        else:
+            voted = _vote_session_project(session_id)
+            project_path = _strip_task_folder(voted) if voted else ''
+
+        # Resolve project name (creates projects table entry if needed)
+        project_name = ''
+        if project_path:
+            project_info = _get_or_create_project(conn, project_path)
+            project_name = project_info["display_name"]
 
         # Merge: accumulate token sums, use latest name if found
         new_name = parsed["custom_name"] or existing_name or parsed.get("first_user_message", "")
@@ -1025,8 +1388,8 @@ def _update_session_stats(session_id: str) -> None:
             INSERT INTO session_stats
                 (session_id, custom_name, total_input_tokens, total_output_tokens,
                  total_cache_creation_tokens, total_cache_read_tokens,
-                 message_count, last_parsed_line)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 message_count, last_parsed_line, project, project_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 custom_name = excluded.custom_name,
                 total_input_tokens = excluded.total_input_tokens,
@@ -1034,11 +1397,14 @@ def _update_session_stats(session_id: str) -> None:
                 total_cache_creation_tokens = excluded.total_cache_creation_tokens,
                 total_cache_read_tokens = excluded.total_cache_read_tokens,
                 message_count = excluded.message_count,
-                last_parsed_line = excluded.last_parsed_line
+                last_parsed_line = excluded.last_parsed_line,
+                project = CASE WHEN session_stats.project != '' THEN session_stats.project ELSE excluded.project END,
+                project_name = CASE WHEN session_stats.project_name != '' THEN session_stats.project_name ELSE excluded.project_name END
             """,
             (
                 session_id, new_name, new_input, new_output,
                 new_cache_creation, new_cache_read, new_msg_count, new_last_line,
+                project_path, project_name,
             ),
         )
         conn.commit()
@@ -1052,8 +1418,301 @@ def _update_session_stats(session_id: str) -> None:
                 pass
 
 
+# DEPRECATED: Legacy import — will be removed in v3.1 or v3.2
+def _import_legacy_dbs() -> None:
+    """Import per-project legacy metrics DBs into the global DB. Never raises.
+
+    Scans ~/.claude/projects/ for slug directories, reverse-maps each slug to
+    its project path, and imports events/session_stats/agent_token_stats from
+    any unmitigated legacy metrics.db found there.
+    """
+    try:
+        projects_dir = Path.home() / '.claude' / 'projects'
+        if not projects_dir.is_dir():
+            return
+
+        for slug_dir in projects_dir.iterdir():
+            if not slug_dir.is_dir():
+                continue
+
+            # Verify it's a real project slug dir (has .jsonl files)
+            if not any(slug_dir.glob('*.jsonl')):
+                continue
+
+            # Reverse-map slug to project path (Claude replaces '/' with '-')
+            slug = slug_dir.name
+            project_path = slug.replace('-', '/')
+
+            legacy_db = Path(project_path) / '.claude' / 'SuperchargeAI' / 'metrics.db'
+            migrated_marker = legacy_db.parent / 'metrics.db.migrated'
+
+            if not legacy_db.is_file():
+                continue
+
+            if migrated_marker.exists():
+                continue
+
+            # Import this legacy DB into the global DB
+            legacy_conn: sqlite3.Connection | None = None
+            global_conn: sqlite3.Connection | None = None
+            try:
+                legacy_conn = sqlite3.connect(f'file:{legacy_db}?mode=ro', uri=True)
+                legacy_conn.row_factory = sqlite3.Row
+                global_conn = _open_readwrite()
+
+                # Copy events (legacy DB has no project column)
+                try:
+                    events = legacy_conn.execute(
+                        'SELECT timestamp, event_type, session_id, agent_id, agent_type, '
+                        'task_uuid, worker_id, parent_id, tool_name, detail FROM events'
+                    ).fetchall()
+                    global_conn.executemany(
+                        'INSERT OR IGNORE INTO events '
+                        '(timestamp, event_type, session_id, agent_id, agent_type, '
+                        'task_uuid, worker_id, parent_id, tool_name, detail, project) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [(*tuple(row), project_path) for row in events],
+                    )
+                except Exception:
+                    pass
+
+                # Copy session_stats (legacy DB has no project or project_name columns)
+                try:
+                    stats = legacy_conn.execute(
+                        'SELECT session_id, custom_name, total_input_tokens, '
+                        'total_output_tokens, total_cache_creation_tokens, '
+                        'total_cache_read_tokens, message_count, last_parsed_line '
+                        'FROM session_stats'
+                    ).fetchall()
+                    global_conn.executemany(
+                        'INSERT OR IGNORE INTO session_stats '
+                        '(session_id, custom_name, total_input_tokens, total_output_tokens, '
+                        'total_cache_creation_tokens, total_cache_read_tokens, '
+                        'message_count, last_parsed_line, project) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [(*tuple(row), project_path) for row in stats],
+                    )
+                except Exception:
+                    pass
+
+                # Copy agent_token_stats (table may not exist in legacy DB)
+                try:
+                    agent_stats = legacy_conn.execute(
+                        'SELECT agent_id, session_id, agent_type, transcript_path, '
+                        'total_input_tokens, total_output_tokens, '
+                        'total_cache_creation_tokens, total_cache_read_tokens, '
+                        'message_count, last_parsed_line FROM agent_token_stats'
+                    ).fetchall()
+                    global_conn.executemany(
+                        'INSERT OR IGNORE INTO agent_token_stats '
+                        '(agent_id, session_id, agent_type, transcript_path, '
+                        'total_input_tokens, total_output_tokens, '
+                        'total_cache_creation_tokens, total_cache_read_tokens, '
+                        'message_count, last_parsed_line) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [tuple(row) for row in agent_stats],
+                    )
+                except Exception:
+                    pass
+
+                global_conn.commit()
+
+                # Mark legacy DB as migrated so we don't import it again
+                legacy_db.rename(migrated_marker)
+            except Exception:
+                pass
+            finally:
+                if legacy_conn is not None:
+                    try:
+                        legacy_conn.close()
+                    except Exception:
+                        pass
+                if global_conn is not None:
+                    try:
+                        global_conn.close()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def _cleanup_projects() -> None:
+    """Delete junk project entries and re-vote empty-project sessions.
+
+    Removes task-folder and ``/tmp/`` entries from the ``projects`` table,
+    clears those stale project references from ``session_stats``, then
+    re-votes any sessions left with an empty ``project``.  Never raises.
+
+    Can also be called manually::
+
+        python -c "from supercharge.metrics import _cleanup_projects; _cleanup_projects()"
+    """
+    conn: sqlite3.Connection | None = None
+    empty_session_ids: list[str] = []
+    try:
+        conn = _open_readwrite()
+
+        # 1. Delete junk rows from projects table
+        conn.execute(
+            "DELETE FROM projects"
+            " WHERE project_path LIKE '%/.claude/SuperchargeAI/%'"
+            "    OR project_path LIKE '/tmp/%'"
+        )
+
+        # 2. Clear project/project_name in session_stats for junk paths
+        conn.execute(
+            """\
+            UPDATE session_stats SET project = '', project_name = ''
+            WHERE project LIKE '%/.claude/SuperchargeAI/%'
+               OR project LIKE '/tmp/%'
+            """
+        )
+        conn.commit()
+
+        # 3. Collect sessions with empty project for re-voting
+        rows = conn.execute(
+            "SELECT session_id FROM session_stats WHERE project = ''"
+        ).fetchall()
+        empty_session_ids = [row['session_id'] for row in rows]
+    except Exception:
+        return
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # Re-vote each empty-project session
+    for session_id in empty_session_ids:
+        try:
+            voted = _vote_session_project(session_id)
+            if not voted:
+                continue
+            project_path = _strip_task_folder(voted)
+            if not project_path or _is_junk_project_path(project_path):
+                continue
+            rw: sqlite3.Connection | None = None
+            try:
+                rw = _open_readwrite()
+                project_info = _get_or_create_project(rw, project_path)
+                rw.execute(
+                    """\
+                    UPDATE session_stats SET project = ?, project_name = ?
+                    WHERE session_id = ? AND project = ''
+                    """,
+                    (project_path, project_info['display_name'], session_id),
+                )
+                rw.commit()
+            except Exception:
+                pass
+            finally:
+                if rw is not None:
+                    try:
+                        rw.close()
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+
+    # Second pass: for sessions still empty after re-voting, resolve project
+    # path from the JSONL file location (slug dir → project path).
+    still_empty: list[str] = []
+    try:
+        conn2: sqlite3.Connection | None = None
+        try:
+            conn2 = _open_readonly()
+            rows2 = conn2.execute(
+                "SELECT session_id FROM session_stats WHERE project = ''"
+            ).fetchall()
+            still_empty = [row['session_id'] for row in rows2]
+        except Exception:
+            pass
+        finally:
+            if conn2 is not None:
+                try:
+                    conn2.close()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    for session_id in still_empty:
+        try:
+            # First try: look up the project from the events table.  This is
+            # authoritative and avoids the lossy slug → path reversal below.
+            project_path = ''
+            conn_ev: sqlite3.Connection | None = None
+            try:
+                conn_ev = _open_readonly()
+                ev_rows = conn_ev.execute(
+                    "SELECT DISTINCT project FROM events"
+                    " WHERE session_id = ? AND project != ''",
+                    (session_id,),
+                ).fetchall()
+                for ev_row in ev_rows:
+                    candidate = ev_row['project']
+                    if candidate and not _is_junk_project_path(candidate):
+                        project_path = candidate
+                        break
+            except Exception:
+                pass
+            finally:
+                if conn_ev is not None:
+                    try:
+                        conn_ev.close()
+                    except Exception:
+                        pass
+
+            # Second try: reverse the JSONL slug to a directory path, but
+            # only accept it when the resulting path exists on disk.  The
+            # simple replace('-', '/') is lossy (a slug like
+            # '--workspaces-Supercharge-AI' maps to '/workspaces/Supercharge/AI'
+            # instead of '/workspaces/Supercharge-AI'), so we gate it behind an
+            # is_dir() check to avoid accepting a wrong path.
+            if not project_path:
+                jsonl_path = _find_session_jsonl(session_id)
+                if jsonl_path:
+                    slug = jsonl_path.parent.name
+                    candidate = slug.replace('-', '/')
+                    if (
+                        candidate
+                        and Path(candidate).is_dir()
+                        and not _is_junk_project_path(candidate)
+                    ):
+                        project_path = candidate
+
+            if not project_path or _is_junk_project_path(project_path):
+                continue
+            rw2: sqlite3.Connection | None = None
+            try:
+                rw2 = _open_readwrite()
+                project_info = _get_or_create_project(rw2, project_path)
+                rw2.execute(
+                    """\
+                    UPDATE session_stats SET project = ?, project_name = ?
+                    WHERE session_id = ? AND project = ''
+                    """,
+                    (project_path, project_info['display_name'], session_id),
+                )
+                rw2.commit()
+            except Exception:
+                pass
+            finally:
+                if rw2 is not None:
+                    try:
+                        rw2.close()
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+
+
 def _update_all_session_stats() -> None:
     """Update session_stats for all known sessions. Never raises."""
+    session_ids: set[str] = set()
+
+    # 1. Collect session IDs from the events table
     conn: sqlite3.Connection | None = None
     try:
         conn = _open_readonly()
@@ -1062,9 +1721,7 @@ def _update_all_session_stats() -> None:
         ).fetchall()
         conn.close()
         conn = None
-
-        for row in rows:
-            _update_session_stats(row["session_id"])
+        session_ids.update(row['session_id'] for row in rows)
     except Exception:
         pass
     finally:
@@ -1073,6 +1730,38 @@ def _update_all_session_stats() -> None:
                 conn.close()
             except Exception:
                 pass
+
+    # 2. Discover sessions from JSONL files across all project slug dirs
+    try:
+        projects_dir = _user_config_dir() / 'projects'
+        if projects_dir.is_dir():
+            for slug_dir in projects_dir.iterdir():
+                if not slug_dir.is_dir():
+                    continue
+                try:
+                    for jsonl_file in slug_dir.glob('*.jsonl'):
+                        sid = jsonl_file.stem
+                        if sid:
+                            session_ids.add(sid)
+                except OSError:
+                    continue
+    except Exception:
+        pass
+
+    # 3. Update stats for each discovered session
+    for sid in session_ids:
+        _update_session_stats(sid)
+
+    # 4. Update per-agent token stats for each session
+    for sid in session_ids:
+        _update_agent_token_stats(sid)
+
+    _import_legacy_dbs()
+
+    try:
+        _cleanup_projects()
+    except Exception:
+        pass
 
 
 def _query_session_stats(session_ids: list[str]) -> dict[str, dict]:
@@ -1382,6 +2071,499 @@ def _query_global_tool_stats() -> dict:
         return {"agent_types": agent_types, "totals": totals}
     except Exception:
         return {"agent_types": {}, "totals": {}}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ── Project-aware query functions ────────────────────────────────────────────
+
+
+def _query_projects() -> list[dict]:
+    """Return all projects with aggregated stats. Never raises (returns [] on error).
+
+    Joins the ``projects`` table with aggregated ``session_stats`` (tokens,
+    session count) and ``events`` (event count, tool calls, timestamps).
+
+    Each dict contains: ``project_path``, ``project_slug``, ``display_name``,
+    ``session_count``, ``total_input_tokens``, ``total_output_tokens``,
+    ``total_cache_read_tokens``, ``total_events``, ``total_tool_calls``,
+    ``first_timestamp``, ``last_timestamp``.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+
+        rows = conn.execute(
+            """\
+            SELECT
+                p.project_path, p.project_slug, p.display_name,
+                COALESCE(ss.session_count, 0) as session_count,
+                COALESCE(ss.total_input_tokens, 0) as total_input_tokens,
+                COALESCE(ss.total_output_tokens, 0) as total_output_tokens,
+                COALESCE(ss.total_cache_read_tokens, 0) as total_cache_read_tokens,
+                COALESCE(ev.total_events, 0) as total_events,
+                COALESCE(ev.total_tool_calls, 0) as total_tool_calls,
+                ev.first_timestamp, ev.last_timestamp
+            FROM projects p
+            LEFT JOIN (
+                SELECT project,
+                       COUNT(DISTINCT session_id) as session_count,
+                       SUM(total_input_tokens) as total_input_tokens,
+                       SUM(total_output_tokens) as total_output_tokens,
+                       SUM(total_cache_read_tokens) as total_cache_read_tokens
+                FROM session_stats
+                WHERE project != ''
+                GROUP BY project
+            ) ss ON p.project_path = ss.project
+            LEFT JOIN (
+                SELECT project,
+                       COUNT(*) as total_events,
+                       SUM(CASE WHEN event_type = 'tool_use' THEN 1 ELSE 0 END) as total_tool_calls,
+                       MIN(timestamp) as first_timestamp,
+                       MAX(timestamp) as last_timestamp
+                FROM events
+                WHERE project != ''
+                GROUP BY project
+            ) ev ON p.project_path = ev.project
+            WHERE p.project_path NOT LIKE '%/.claude/SuperchargeAI/%'
+              AND p.project_path NOT LIKE '/tmp/%'
+            ORDER BY ev.last_timestamp DESC
+            """
+        ).fetchall()
+
+        return [
+            {
+                "project_path": row["project_path"],
+                "project_slug": row["project_slug"],
+                "display_name": row["display_name"],
+                "session_count": row["session_count"],
+                "total_input_tokens": row["total_input_tokens"],
+                "total_output_tokens": row["total_output_tokens"],
+                "total_cache_read_tokens": row["total_cache_read_tokens"],
+                "total_events": row["total_events"],
+                "total_tool_calls": row["total_tool_calls"],
+                "first_timestamp": row["first_timestamp"],
+                "last_timestamp": row["last_timestamp"],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_project_sessions_by_path(project_path: str) -> list[dict]:
+    """Return sessions for a specific project with aggregate stats.
+
+    Filtered version of :func:`_query_sessions` for the given *project_path*.
+    Adds ``project`` and ``project_name`` keys to each session dict.
+    Never raises (returns [] on error).
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+
+        rows = conn.execute(
+            """\
+            SELECT
+                session_id,
+                MIN(timestamp) AS first_timestamp,
+                MAX(timestamp) AS last_timestamp,
+                COUNT(*) AS event_count,
+                COUNT(DISTINCT CASE WHEN agent_id != '' THEN agent_id END) AS agent_count,
+                COUNT(DISTINCT CASE WHEN worker_id != '' THEN worker_id END) AS worker_count,
+                SUM(CASE WHEN event_type = 'tool_use' THEN 1 ELSE 0 END) AS tool_call_count,
+                GROUP_CONCAT(DISTINCT CASE WHEN agent_type != '' THEN agent_type END) AS agent_types_csv,
+                (SELECT GROUP_CONCAT(at, ',') FROM (
+                    SELECT agent_type AS at
+                    FROM events e2
+                    WHERE e2.session_id = events.session_id
+                      AND e2.agent_type != ''
+                    GROUP BY e2.agent_type
+                    ORDER BY MIN(e2.timestamp)
+                )) AS agent_types_ordered
+            FROM events
+            WHERE session_id != '' AND project = ?
+            GROUP BY session_id
+            HAVING COUNT(*) > 1
+              AND (COUNT(DISTINCT CASE WHEN agent_id != '' THEN agent_id END) > 0
+                   OR COUNT(DISTINCT CASE WHEN worker_id != '' THEN worker_id END) > 0
+                   OR SUM(CASE WHEN event_type = 'tool_use' THEN 1 ELSE 0 END) > 0)
+            ORDER BY first_timestamp DESC
+            """,
+            (project_path,),
+        ).fetchall()
+
+        results: list[dict] = []
+        for row in rows:
+            first_ts = row["first_timestamp"]
+            last_ts = row["last_timestamp"]
+            try:
+                t0 = datetime.fromisoformat(first_ts)
+                t1 = datetime.fromisoformat(last_ts)
+                duration = (t1 - t0).total_seconds()
+            except Exception:
+                duration = 0.0
+
+            agent_types_csv = row["agent_types_ordered"] or row["agent_types_csv"] or ""
+            agent_types_raw = [a for a in agent_types_csv.split(",") if a]
+            # Normalize and deduplicate, preserving temporal order
+            seen: set[str] = set()
+            agent_types: list[str] = []
+            for a in agent_types_raw:
+                norm = _normalize_agent_type(a)
+                if norm not in seen:
+                    seen.add(norm)
+                    agent_types.append(norm)
+
+            results.append(
+                {
+                    "session_id": row["session_id"],
+                    "first_timestamp": first_ts,
+                    "last_timestamp": last_ts,
+                    "duration_seconds": duration,
+                    "event_count": row["event_count"],
+                    "agent_count": row["agent_count"],
+                    "worker_count": row["worker_count"],
+                    "tool_call_count": row["tool_call_count"],
+                    "agent_types": agent_types,
+                }
+            )
+
+        # Enrich results with project and project_name from session_stats
+        if results:
+            try:
+                sids = [r["session_id"] for r in results]
+                placeholders = ",".join("?" for _ in sids)
+                proj_rows = conn.execute(
+                    f"SELECT session_id, project, project_name FROM session_stats "
+                    f"WHERE session_id IN ({placeholders})",
+                    sids,
+                ).fetchall()
+                proj_map: dict[str, tuple[str, str]] = {
+                    r["session_id"]: (r["project"] or "", r["project_name"] or "")
+                    for r in proj_rows
+                }
+            except Exception:
+                proj_map = {}
+            for result in results:
+                proj, proj_name = proj_map.get(result["session_id"], ("", ""))
+                result["project"] = proj
+                result["project_name"] = proj_name
+
+        return results
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_project_tool_stats(project_path: str) -> dict:
+    """Return tool usage for a project grouped by agent_type and tool_name.
+
+    Filtered version of :func:`_query_global_tool_stats` for *project_path*.
+    Returns ``{agent_types: {code: {Bash: 50, ...}, ...}, totals: {Bash: 80, ...}}``.
+    Never raises (returns ``{"agent_types": {}, "totals": {}}`` on error).
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+
+        rows = conn.execute(
+            "SELECT agent_type, tool_name, detail, COUNT(*) as count "
+            "FROM events "
+            "WHERE event_type = 'tool_use' AND tool_name != '' AND project = ? "
+            "GROUP BY agent_type, tool_name, detail",
+            (project_path,),
+        ).fetchall()
+
+        agent_types: dict[str, dict[str, int]] = {}
+        totals: dict[str, int] = {}
+        supercharge_count = 0
+
+        for row in rows:
+            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "unknown"
+            tool = row["tool_name"]
+            count = row["count"]
+
+            agent_types.setdefault(atype, {})
+            agent_types[atype][tool] = agent_types[atype].get(tool, 0) + count
+            totals[tool] = totals.get(tool, 0) + count
+
+            # Detect supercharge bash calls
+            if tool == "Bash":
+                try:
+                    detail = json.loads(row["detail"]) if row["detail"] else {}
+                    command = detail.get("command", "")
+                    if "supercharge" in command:
+                        supercharge_count += count
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass
+
+        if supercharge_count > 0:
+            totals["supercharge"] = supercharge_count
+
+        return {"agent_types": agent_types, "totals": totals}
+    except Exception:
+        return {"agent_types": {}, "totals": {}}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_project_token_stats(project_path: str) -> list[dict]:
+    """Return token usage by agent type for a project. Never raises (returns [] on error).
+
+    Aggregates ``agent_token_stats`` for all sessions belonging to *project_path*,
+    grouped by ``agent_type``.
+
+    Each dict contains: ``agent_type``, ``input_tokens``, ``output_tokens``,
+    ``cache_creation_tokens``, ``cache_read_tokens``, ``agent_count``.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+
+        rows = conn.execute(
+            """\
+            SELECT ats.agent_type,
+                   SUM(ats.total_input_tokens) as input_tokens,
+                   SUM(ats.total_output_tokens) as output_tokens,
+                   SUM(ats.total_cache_creation_tokens) as cache_creation_tokens,
+                   SUM(ats.total_cache_read_tokens) as cache_read_tokens,
+                   COUNT(*) as agent_count
+            FROM agent_token_stats ats
+            INNER JOIN session_stats ss ON ats.session_id = ss.session_id
+            WHERE ss.project = ?
+            GROUP BY ats.agent_type
+            ORDER BY (SUM(ats.total_input_tokens) + SUM(ats.total_output_tokens)) DESC
+            """,
+            (project_path,),
+        ).fetchall()
+
+        return [
+            {
+                "agent_type": _normalize_agent_type(row["agent_type"]),
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "cache_creation_tokens": row["cache_creation_tokens"],
+                "cache_read_tokens": row["cache_read_tokens"],
+                "agent_count": row["agent_count"],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ── Slug-based project query functions ───────────────────────────────────────
+
+
+def _query_project_sessions(project_slug: str) -> list[dict]:
+    """Return sessions for a project identified by slug, enriched with stats.
+
+    Resolves *project_slug* to a ``project_path`` via the ``projects`` table,
+    then returns session data filtered to that project (same shape as
+    :func:`_query_sessions`).  Enriches results with
+    :func:`_query_session_stats` to add ``name``, ``input_tokens``,
+    ``output_tokens``, ``cache_creation_tokens``, and ``cache_read_tokens``.
+    Never raises (returns [] on error).
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+        row = conn.execute(
+            "SELECT project_path FROM projects WHERE project_slug = ?",
+            (project_slug,),
+        ).fetchone()
+        if row is None:
+            return []
+        project_path = row["project_path"]
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    results = _query_project_sessions_by_path(project_path)
+
+    # Enrich with session stats (name, tokens)
+    if results:
+        session_ids = [s["session_id"] for s in results]
+        stats = _query_session_stats(session_ids)
+        for session in results:
+            sid = session["session_id"]
+            ss = stats.get(sid, {})
+            session["name"] = ss.get("name", "")
+            session["input_tokens"] = ss.get("input_tokens", 0)
+            session["output_tokens"] = ss.get("output_tokens", 0)
+            session["cache_creation_tokens"] = ss.get("cache_creation_tokens", 0)
+            session["cache_read_tokens"] = ss.get("cache_read_tokens", 0)
+
+    return results
+
+
+def _query_project_tokens(project_slug: str) -> list[dict]:
+    """Return token usage by agent type for a project identified by slug.
+
+    Resolves *project_slug* to ``project_path``, then aggregates
+    ``agent_token_stats`` for all sessions whose events have
+    ``project = project_path``, grouped by ``agent_type``.
+
+    Each dict contains: ``agent_type``, ``total_input_tokens``,
+    ``total_output_tokens``, ``total_cache_creation_tokens``,
+    ``total_cache_read_tokens``.
+    Never raises (returns [] on error).
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+
+        row = conn.execute(
+            "SELECT project_path FROM projects WHERE project_slug = ?",
+            (project_slug,),
+        ).fetchone()
+        if row is None:
+            return []
+        project_path = row["project_path"]
+
+        rows = conn.execute(
+            """\
+            SELECT ats.agent_type,
+                   SUM(ats.total_input_tokens) AS total_input_tokens,
+                   SUM(ats.total_output_tokens) AS total_output_tokens,
+                   SUM(ats.total_cache_creation_tokens) AS total_cache_creation_tokens,
+                   SUM(ats.total_cache_read_tokens) AS total_cache_read_tokens
+            FROM agent_token_stats ats
+            WHERE ats.session_id IN (
+                SELECT DISTINCT session_id FROM events WHERE project = ?
+            )
+            GROUP BY ats.agent_type
+            ORDER BY (SUM(ats.total_input_tokens) + SUM(ats.total_output_tokens)) DESC
+            """,
+            (project_path,),
+        ).fetchall()
+
+        return [
+            {
+                "agent_type": _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "unknown",
+                "total_input_tokens": row["total_input_tokens"] or 0,
+                "total_output_tokens": row["total_output_tokens"] or 0,
+                "total_cache_creation_tokens": row["total_cache_creation_tokens"] or 0,
+                "total_cache_read_tokens": row["total_cache_read_tokens"] or 0,
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_project_tools(project_slug: str) -> dict:
+    """Return tool usage for a project identified by slug.
+
+    Resolves *project_slug* to ``project_path``, then delegates to
+    :func:`_query_project_tool_stats`.
+
+    Returns ``{agent_types: {code: {Bash: N, ...}, ...}, totals: {Bash: N, ...}}``.
+    Never raises (returns ``{"agent_types": {}, "totals": {}}`` on error).
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+        row = conn.execute(
+            "SELECT project_path FROM projects WHERE project_slug = ?",
+            (project_slug,),
+        ).fetchone()
+        if row is None:
+            return {"agent_types": {}, "totals": {}}
+        project_path = row["project_path"]
+    except Exception:
+        return {"agent_types": {}, "totals": {}}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return _query_project_tool_stats(project_path)
+
+
+def _get_project_by_slug(project_slug: str) -> dict | None:
+    """Return a project row dict for the given slug, or None if not found. Never raises."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+        row = conn.execute(
+            "SELECT project_path, project_slug, display_name, user_edited, last_updated "
+            "FROM projects WHERE project_slug = ?",
+            (project_slug,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+    except Exception:
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _rename_project(project_slug: str, name: str) -> bool:
+    """Update the display name for a project identified by slug.
+
+    Sets ``display_name``, ``user_edited = 1``, and ``last_updated`` in the
+    ``projects`` table.  Returns ``True`` if a row was updated, ``False``
+    if the slug was not found or an error occurred.
+    Never raises.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readwrite()
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = conn.execute(
+            "UPDATE projects SET display_name = ?, user_edited = 1, last_updated = ? "
+            "WHERE project_slug = ?",
+            (name, now, project_slug),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception:
+        return False
     finally:
         if conn is not None:
             try:

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 from supercharge.metrics import (
     _event_count,
+    _find_session_jsonl,
     _init_db,
     _query_events,
     _query_session_events,
     _query_sessions,
     _query_stats,
+    _vote_session_project,
 )
 
 
@@ -310,3 +313,121 @@ class TestQueryStats:
             stats = _query_stats()
         assert stats["totals"]["sessions"] == 0
         assert stats["totals"]["events"] == 0
+
+
+class TestCwdVoting:
+    """Test _vote_session_project CWD voting logic."""
+
+    def _write_jsonl(self, path: Path, messages: list) -> None:
+        path.write_text("\n".join(json.dumps(m) for m in messages) + "\n")
+
+    def test_vote_uniform_cwds_settles_at_5(self, tmp_path: Path):
+        """5 consecutive identical CWDs with no other CWD ever seen → Rule 1 settles early."""
+        jsonl = tmp_path / "session.jsonl"
+        messages = [{"type": "user", "cwd": "/projects/myapp", "sessionId": "test-session"}] * 5
+        self._write_jsonl(jsonl, messages)
+
+        with patch("supercharge.metrics._find_session_jsonl", return_value=jsonl):
+            result = _vote_session_project("test-session")
+
+        assert result == "/projects/myapp"
+
+    def test_vote_dominant_cwd_settles_at_20(self, tmp_path: Path):
+        """17 of 20 CWD votes for one path (85% > 80%) → Rule 2 settles at 20 votes."""
+        jsonl = tmp_path / "session.jsonl"
+        # Scatter 3 'other' messages so Rule 1 never triggers (len(cwd_counts) > 1 from msg 4)
+        # Layout: [main*3, other, main*13, other, main, other] = 17 main + 3 other = 20
+        messages = []
+        for _ in range(3):
+            messages.append({"type": "user", "cwd": "/projects/main", "sessionId": "s"})
+        messages.append({"type": "user", "cwd": "/projects/other", "sessionId": "s"})
+        for _ in range(13):
+            messages.append({"type": "user", "cwd": "/projects/main", "sessionId": "s"})
+        messages.append({"type": "user", "cwd": "/projects/other", "sessionId": "s"})
+        messages.append({"type": "user", "cwd": "/projects/main", "sessionId": "s"})
+        messages.append({"type": "user", "cwd": "/projects/other", "sessionId": "s"})
+        assert len(messages) == 20
+        self._write_jsonl(jsonl, messages)
+
+        with patch("supercharge.metrics._find_session_jsonl", return_value=jsonl):
+            result = _vote_session_project("test-session")
+
+        assert result == "/projects/main"
+
+    def test_vote_mixed_cwds_uses_most_frequent_after_50(self, tmp_path: Path):
+        """30 alpha + 20 beta interleaved → neither Rule 1 nor 2 fires; Rule 3 returns most frequent."""
+        jsonl = tmp_path / "session.jsonl"
+        # Alternate alpha/beta for 40 messages (20/20), then 10 more alpha
+        # At every 20-vote checkpoint share is 50%, so Rule 2 never fires before 50
+        messages = []
+        for _ in range(20):
+            messages.append({"type": "user", "cwd": "/projects/alpha", "sessionId": "s"})
+            messages.append({"type": "user", "cwd": "/projects/beta", "sessionId": "s"})
+        for _ in range(10):
+            messages.append({"type": "user", "cwd": "/projects/alpha", "sessionId": "s"})
+        assert len(messages) == 50
+        self._write_jsonl(jsonl, messages)
+
+        with patch("supercharge.metrics._find_session_jsonl", return_value=jsonl):
+            result = _vote_session_project("test-session")
+
+        assert result == "/projects/alpha"
+
+    def test_vote_no_cwd_returns_none(self, tmp_path: Path):
+        """Messages with no cwd field → returns None (no votes cast)."""
+        jsonl = tmp_path / "session.jsonl"
+        messages = [{"type": "user", "sessionId": "s"} for _ in range(10)]
+        self._write_jsonl(jsonl, messages)
+
+        with patch("supercharge.metrics._find_session_jsonl", return_value=jsonl):
+            result = _vote_session_project("test-session")
+
+        assert result is None
+
+    def test_vote_skips_non_cwd_messages(self, tmp_path: Path):
+        """Non-cwd messages are skipped; 3 cwd messages all for same path return that path."""
+        jsonl = tmp_path / "session.jsonl"
+        messages = []
+        for _ in range(3):
+            messages.append({"type": "user", "cwd": "/projects/x", "sessionId": "s"})
+        for _ in range(5):
+            messages.append({"type": "assistant", "sessionId": "s"})
+        self._write_jsonl(jsonl, messages)
+
+        with patch("supercharge.metrics._find_session_jsonl", return_value=jsonl):
+            result = _vote_session_project("test-session")
+
+        assert result == "/projects/x"
+
+
+class TestFindSessionJsonlCrossProject:
+    """Test _find_session_jsonl scans across all project slug dirs."""
+
+    def test_find_session_across_projects(self, tmp_path: Path):
+        """Session JSONL file placed in one of several slug dirs is found correctly."""
+        # Mimic ~/.claude/projects/ with two slug dirs
+        slug1 = tmp_path / "projects" / "slug-aaa"
+        slug2 = tmp_path / "projects" / "slug-bbb"
+        slug1.mkdir(parents=True)
+        slug2.mkdir(parents=True)
+
+        # Place the session file only in the second slug dir
+        session_file = slug2 / "test-session-123.jsonl"
+        session_file.write_text('{"type": "user", "sessionId": "test-session-123"}\n')
+
+        with patch("supercharge.metrics._user_config_dir", return_value=tmp_path):
+            result = _find_session_jsonl("test-session-123")
+
+        assert result == session_file
+
+    def test_find_session_returns_none_when_missing(self, tmp_path: Path):
+        """Returns None when the session file doesn't exist in any slug dir."""
+        slug1 = tmp_path / "projects" / "slug-aaa"
+        slug2 = tmp_path / "projects" / "slug-bbb"
+        slug1.mkdir(parents=True)
+        slug2.mkdir(parents=True)
+
+        with patch("supercharge.metrics._user_config_dir", return_value=tmp_path):
+            result = _find_session_jsonl("test-session-123")
+
+        assert result is None

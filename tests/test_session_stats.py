@@ -140,6 +140,8 @@ class TestMigrations:
             "total_cache_read_tokens",
             "message_count",
             "last_parsed_line",
+            "project",
+            "project_name",
         }
         assert columns == expected
         conn.close()

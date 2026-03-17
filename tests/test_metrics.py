@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from supercharge.metrics import _db_path, _emit, _init_db, _open_readonly, _query_events
+from supercharge.metrics import _db_path, _emit, _import_legacy_dbs, _init_db, _open_readonly, _query_events
 
 # ── _db_path ─────────────────────────────────────────────────────────────────
 
@@ -18,16 +18,9 @@ from supercharge.metrics import _db_path, _emit, _init_db, _open_readonly, _quer
 class TestDbPath:
     """Test _db_path returns the correct path."""
 
-    def test_returns_metrics_db_under_project(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/fake/project")
+    def test_returns_user_level_path(self):
         result = _db_path()
-        assert result == Path("/fake/project/.claude/SuperchargeAI/metrics.db")
-
-    def test_uses_project_dir(self, monkeypatch):
-        """Verify it delegates to _project_dir()."""
-        with patch("supercharge.metrics._project_dir", return_value="/mock/root"):
-            result = _db_path()
-        assert result == Path("/mock/root/.claude/SuperchargeAI/metrics.db")
+        assert result == Path.home() / '.claude' / 'SuperchargeAI' / 'metrics.db'
 
 
 # ── _init_db ─────────────────────────────────────────────────────────────────
@@ -67,6 +60,7 @@ class TestInitDb:
             "parent_id",
             "tool_name",
             "detail",
+            "project",
         }
         assert columns == expected
         conn.close()
@@ -199,7 +193,7 @@ class TestEmit:
                     "supercharge.metrics._db_path",
                     return_value=tmp_path / "metrics.db",
                 ):
-                    _emit("concurrent", session_id=f"s{i}")
+                    _emit("concurrent", session_id=f"s{i}", project=str(tmp_path))
             except Exception as exc:
                 errors.append(exc)
 
@@ -364,3 +358,306 @@ class TestOpenReadonly:
             # DB file does not exist — should raise
             with pytest.raises(sqlite3.OperationalError):
                 _open_readonly()
+
+
+# ── Migration 4 ───────────────────────────────────────────────────────────────
+
+
+class TestMigration4:
+    """Test migration 4: project columns, projects table, and indexes."""
+
+    def test_fresh_db_has_project_column(self, tmp_path: Path):
+        """Fresh DB should have project column in events after migration."""
+        db = tmp_path / 'test.db'
+        conn = sqlite3.connect(str(db))
+        _init_db(conn)
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(events)').fetchall()}
+        assert 'project' in cols
+        conn.close()
+
+    def test_fresh_db_has_session_stats_project_columns(self, tmp_path: Path):
+        """Fresh DB should have project and project_name in session_stats."""
+        db = tmp_path / 'test.db'
+        conn = sqlite3.connect(str(db))
+        _init_db(conn)
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(session_stats)').fetchall()}
+        assert 'project' in cols
+        assert 'project_name' in cols
+        conn.close()
+
+    def test_fresh_db_has_projects_table(self, tmp_path: Path):
+        """Fresh DB should have projects table with correct schema."""
+        db = tmp_path / 'test.db'
+        conn = sqlite3.connect(str(db))
+        _init_db(conn)
+        cursor = conn.execute('PRAGMA table_info(projects)')
+        cols = {r[1] for r in cursor.fetchall()}
+        assert cols == {'project_path', 'project_slug', 'display_name', 'user_edited', 'last_updated'}
+        conn.close()
+
+    def test_fresh_db_has_project_indexes(self, tmp_path: Path):
+        """Fresh DB should have indexes on events(project) and session_stats(project)."""
+        db = tmp_path / 'test.db'
+        conn = sqlite3.connect(str(db))
+        _init_db(conn)
+        indexes = {r[0] for r in conn.execute('SELECT name FROM sqlite_master WHERE type="index"').fetchall()}
+        assert 'idx_events_project' in indexes
+        assert 'idx_session_stats_project' in indexes
+        conn.close()
+
+    def test_migration_on_v3_db(self, tmp_path: Path):
+        """Running migration 4 on an existing v3 DB should add project columns."""
+        db = tmp_path / 'test.db'
+        conn = sqlite3.connect(str(db))
+        # Simulate v3 schema manually
+        conn.executescript('''
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL DEFAULT '',
+                agent_type TEXT NOT NULL DEFAULT '',
+                task_uuid TEXT NOT NULL DEFAULT '',
+                worker_id TEXT NOT NULL DEFAULT '',
+                parent_id TEXT NOT NULL DEFAULT '',
+                tool_name TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (1);
+            INSERT INTO schema_version (version) VALUES (2);
+            INSERT INTO schema_version (version) VALUES (3);
+            CREATE TABLE session_stats (
+                session_id TEXT PRIMARY KEY,
+                custom_name TEXT DEFAULT '',
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_cache_creation_tokens INTEGER DEFAULT 0,
+                total_cache_read_tokens INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                last_parsed_line INTEGER DEFAULT 0
+            );
+            CREATE TABLE agent_token_stats (
+                agent_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL DEFAULT '',
+                agent_type TEXT NOT NULL DEFAULT '',
+                transcript_path TEXT NOT NULL DEFAULT '',
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_cache_creation_tokens INTEGER DEFAULT 0,
+                total_cache_read_tokens INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                last_parsed_line INTEGER DEFAULT 0
+            );
+        ''')
+        # Insert a pre-existing event
+        conn.execute("INSERT INTO events (timestamp, event_type, session_id) VALUES ('2024-01-01', 'test', 's1')")
+        conn.commit()
+
+        # Run init_db which should trigger migration 4
+        _init_db(conn)
+
+        # Verify project column was added
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(events)').fetchall()}
+        assert 'project' in cols
+
+        # Verify projects table
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert 'projects' in tables
+
+        # Verify version 4 is recorded
+        version = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+        assert version == 4
+
+        # Verify existing event still has empty project (default)
+        row = conn.execute('SELECT project FROM events WHERE session_id = "s1"').fetchone()
+        assert row[0] == ''
+        conn.close()
+
+    def test_schema_version_is_4(self, tmp_path: Path):
+        """After full init, schema version should be 4."""
+        db = tmp_path / 'test.db'
+        conn = sqlite3.connect(str(db))
+        _init_db(conn)
+        version = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+        assert version == 4
+        conn.close()
+
+
+# ── _emit project column ─────────────────────────────────────────────────────
+
+
+class TestEmitProject:
+    """Test _emit populates project column."""
+
+    def _patch_db_path(self, tmp_path: Path):
+        return patch('supercharge.metrics._db_path', return_value=tmp_path / 'metrics.db')
+
+    def test_project_auto_populated(self, tmp_path: Path):
+        """_emit should auto-populate project from _project_dir()."""
+        with self._patch_db_path(tmp_path), \
+             patch('supercharge.metrics._project_dir', return_value='/fake/project'):
+            _emit('test_event', session_id='s1')
+
+        conn = sqlite3.connect(str(tmp_path / 'metrics.db'))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute('SELECT project FROM events').fetchone()
+        assert row['project'] == '/fake/project'
+        conn.close()
+
+    def test_project_explicit_override(self, tmp_path: Path):
+        """Explicit project kwarg should override auto-detection."""
+        with self._patch_db_path(tmp_path):
+            _emit('test_event', project='/explicit/path')
+
+        conn = sqlite3.connect(str(tmp_path / 'metrics.db'))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute('SELECT project FROM events').fetchone()
+        assert row['project'] == '/explicit/path'
+        conn.close()
+
+    def test_project_empty_on_detection_failure(self, tmp_path: Path):
+        """project should be empty if _project_dir() fails."""
+        with self._patch_db_path(tmp_path), \
+             patch('supercharge.metrics._project_dir', side_effect=RuntimeError('no project')):
+            _emit('test_event')
+
+        conn = sqlite3.connect(str(tmp_path / 'metrics.db'))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute('SELECT project FROM events').fetchone()
+        assert row['project'] == ''
+        conn.close()
+
+
+# ── _import_legacy_dbs ────────────────────────────────────────────────────────
+
+
+class TestLegacyImport:
+    """Test _import_legacy_dbs correctly copies data and marks old DB."""
+
+    def test_imports_events_from_legacy_db(self, tmp_path: Path):
+        """Legacy events should be copied to global DB with project column set."""
+        import tempfile
+        # Use a custom tmpdir without hyphens — slug reverse-mapping (replace - with /)
+        # is lossy and breaks on paths containing hyphens (like pytest's default tmp_path)
+        hyphen_free = Path(tempfile.mkdtemp(prefix='supercharge_test_', dir='/tmp'))
+        fake_home = hyphen_free / 'home'
+        fake_home.mkdir()
+
+        # Create projects slug dir with a .jsonl file
+        project_path = str(fake_home / 'workspace' / 'myproject')
+        slug = project_path.replace('/', '-')
+        slug_dir = fake_home / '.claude' / 'projects' / slug
+        slug_dir.mkdir(parents=True)
+        (slug_dir / 'session.jsonl').write_text('')
+
+        # Create legacy metrics.db at the project path
+        legacy_dir = Path(project_path) / '.claude' / 'SuperchargeAI'
+        legacy_dir.mkdir(parents=True)
+        legacy_db = legacy_dir / 'metrics.db'
+        conn = sqlite3.connect(str(legacy_db))
+        conn.executescript('''
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL DEFAULT '',
+                agent_type TEXT NOT NULL DEFAULT '',
+                task_uuid TEXT NOT NULL DEFAULT '',
+                worker_id TEXT NOT NULL DEFAULT '',
+                parent_id TEXT NOT NULL DEFAULT '',
+                tool_name TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (1);
+            INSERT INTO schema_version (version) VALUES (2);
+            INSERT INTO schema_version (version) VALUES (3);
+            CREATE TABLE session_stats (
+                session_id TEXT PRIMARY KEY,
+                custom_name TEXT DEFAULT '',
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_cache_creation_tokens INTEGER DEFAULT 0,
+                total_cache_read_tokens INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                last_parsed_line INTEGER DEFAULT 0
+            );
+        ''')
+        conn.execute("INSERT INTO events (timestamp, event_type, session_id) VALUES ('2024-01-01T00:00:00+00:00', 'task_init', 's1')")
+        conn.execute("INSERT INTO session_stats (session_id, custom_name) VALUES ('s1', 'My Session')")
+        conn.commit()
+        conn.close()
+
+        # Create the global DB path and patch _db_path
+        global_db = fake_home / '.claude' / 'SuperchargeAI' / 'metrics.db'
+        global_db.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch('supercharge.metrics._db_path', return_value=global_db), \
+             patch('pathlib.Path.home', return_value=fake_home):
+            # Initialize global DB
+            gconn = sqlite3.connect(str(global_db))
+            gconn.execute('PRAGMA journal_mode=WAL')
+            _init_db(gconn)
+            gconn.close()
+
+            _import_legacy_dbs()
+
+        # Verify events were imported with project column
+        gconn = sqlite3.connect(str(global_db))
+        gconn.row_factory = sqlite3.Row
+        rows = gconn.execute('SELECT * FROM events WHERE session_id = "s1"').fetchall()
+        assert len(rows) == 1
+        assert rows[0]['project'] == project_path
+
+        # Verify session_stats were imported
+        stats = gconn.execute('SELECT * FROM session_stats WHERE session_id = "s1"').fetchall()
+        assert len(stats) == 1
+        assert stats[0]['custom_name'] == 'My Session'
+        gconn.close()
+
+        # Verify legacy DB was renamed
+        assert not legacy_db.exists()
+        assert (legacy_dir / 'metrics.db.migrated').exists()
+
+    def test_skips_already_migrated(self, tmp_path: Path, monkeypatch):
+        """Should skip DBs that already have .migrated marker."""
+        fake_home = tmp_path / 'home'
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, 'home', staticmethod(lambda: fake_home))
+
+        project_path = str(tmp_path / 'projects' / 'myproject')
+        slug = project_path.replace('/', '-')
+        slug_dir = fake_home / '.claude' / 'projects' / slug
+        slug_dir.mkdir(parents=True)
+        (slug_dir / 'session.jsonl').write_text('')
+
+        # Create BOTH metrics.db and metrics.db.migrated
+        legacy_dir = Path(project_path) / '.claude' / 'SuperchargeAI'
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / 'metrics.db').write_text('fake')
+        (legacy_dir / 'metrics.db.migrated').write_text('marker')
+
+        global_db = fake_home / '.claude' / 'SuperchargeAI' / 'metrics.db'
+        global_db.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch('supercharge.metrics._db_path', return_value=global_db):
+            gconn = sqlite3.connect(str(global_db))
+            gconn.execute('PRAGMA journal_mode=WAL')
+            _init_db(gconn)
+            gconn.close()
+
+            _import_legacy_dbs()
+
+        # Legacy DB should NOT have been touched
+        assert (legacy_dir / 'metrics.db').exists()
+
+    def test_no_projects_dir(self, tmp_path: Path, monkeypatch):
+        """Should handle missing ~/.claude/projects/ gracefully."""
+        fake_home = tmp_path / 'home'
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, 'home', staticmethod(lambda: fake_home))
+
+        _import_legacy_dbs()  # Should not raise

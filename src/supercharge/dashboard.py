@@ -33,8 +33,8 @@ from supercharge.paths import _find_task_dir, _project_dir
 
 
 def _pidfile_path() -> Path:
-    """Return the path to the dashboard PID file."""
-    return Path(_project_dir()) / ".claude" / "SuperchargeAI" / "dashboard.pid"
+    """Return the path to the global dashboard PID file (user-level)."""
+    return Path.home() / ".claude" / "SuperchargeAI" / "dashboard.pid"
 
 
 def _read_pidfile() -> tuple[int, int] | None:
@@ -88,6 +88,7 @@ def _find_free_port(default: int = 9333, max_attempts: int = 10) -> int:
     for i in range(max_attempts):
         port = default + i
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("127.0.0.1", port))
                 return port
@@ -304,8 +305,9 @@ async def _handle_session_rename(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     name = body.get("name")
-    if name is None:
-        return JSONResponse({"error": "'name' field is required"}, status_code=400)
+    if not isinstance(name, str) or not name.strip():
+        return JSONResponse({"error": "'name' must be a non-empty string"}, status_code=400)
+    name = name.strip()[:200]
 
     metrics._rename_session(session_id, name)
     return JSONResponse({"ok": True})
@@ -315,6 +317,57 @@ async def _handle_global_tools(request: Request) -> JSONResponse:
     """Return global tool usage stats grouped by agent type."""
     data = metrics._query_global_tool_stats()
     return JSONResponse(data)
+
+
+async def _handle_projects(request: Request) -> JSONResponse:
+    """Return all projects with aggregated stats."""
+    data = metrics._query_projects()
+    return JSONResponse(data)
+
+
+async def _handle_project_sessions(request: Request) -> JSONResponse:
+    """Return sessions for a project, enriched with names and token counts."""
+    slug = request.path_params["slug"]
+    if metrics._get_project_by_slug(slug) is None:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    data = metrics._query_project_sessions(slug)
+    return JSONResponse(data)
+
+
+async def _handle_project_tokens(request: Request) -> JSONResponse:
+    """Return per-agent token stats for a project."""
+    slug = request.path_params["slug"]
+    data = metrics._query_project_tokens(slug)
+    return JSONResponse(data)
+
+
+async def _handle_project_tools(request: Request) -> JSONResponse:
+    """Return tool usage stats for a project grouped by agent type."""
+    slug = request.path_params["slug"]
+    data = metrics._query_project_tools(slug)
+    return JSONResponse(data)
+
+
+async def _handle_project_rename(request: Request) -> JSONResponse:
+    """Rename a project (update display_name in DB)."""
+    slug = request.path_params["slug"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return JSONResponse({"error": "'name' must be a non-empty string"}, status_code=400)
+    name = name.strip()[:200]
+
+    updated = metrics._rename_project(slug, name)
+    if not updated:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    project = metrics._get_project_by_slug(slug)
+    if project is None:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    return JSONResponse(project)
 
 
 async def _handle_task_content(request: Request) -> JSONResponse:
@@ -429,6 +482,11 @@ def _create_app() -> Starlette:
         Route("/api/browse", _handle_browse, methods=["GET"]),
         Route("/api/tasks/{task_uuid}/content", _handle_task_content, methods=["GET"]),
         Route("/api/tasks/find", _handle_find_task, methods=["GET"]),
+        Route("/api/projects", _handle_projects, methods=["GET"]),
+        Route("/api/projects/{slug}/sessions", _handle_project_sessions, methods=["GET"]),
+        Route("/api/projects/{slug}/tokens", _handle_project_tokens, methods=["GET"]),
+        Route("/api/projects/{slug}/tools", _handle_project_tools, methods=["GET"]),
+        Route("/api/projects/{slug}/name", _handle_project_rename, methods=["PUT"]),
         Mount(
             "/static",
             app=StaticFiles(
@@ -461,12 +519,23 @@ def _run_server(
     if existing is not None:
         pid, existing_port = existing
         if _is_process_alive(pid):
-            url = f"http://{host}:{existing_port}"
-            print(f"Dashboard already running at {url} (pid {pid})")
-            return
-        else:
-            # Stale PID file — clean it up
-            _cleanup_pidfile()
+            if open_browser:
+                # User wants to open the dashboard — reuse existing instance
+                url = f"http://{host}:{existing_port}"
+                print(f"Dashboard already running at {url} (pid {pid})")
+                import webbrowser
+                webbrowser.open(url)
+                return
+            else:
+                # Kill existing instance to restart fresh on the same port
+                try:
+                    import signal
+                    os.kill(pid, signal.SIGTERM)
+                    import time
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+        _cleanup_pidfile()
 
     # Determine port
     if port is None:

@@ -505,14 +505,16 @@ class TestSingleton:
         with (
             patch("supercharge.dashboard._pidfile_path", return_value=pidfile),
             patch("os.kill") as mock_kill,  # Make process appear alive
+            patch("webbrowser.open") as mock_browser,
         ):
             mock_kill.return_value = None  # No exception = process alive
             _write_pidfile(os.getpid(), 9333)
 
-            _run_server(host="127.0.0.1", port=9333)
+            _run_server(host="127.0.0.1", port=9333, open_browser=True)
 
             captured = capsys.readouterr()
             assert "127.0.0.1:9333" in captured.out
+            mock_browser.assert_called_once()
 
     def test_stale_pid_allows_startup(self, tmp_path):
         from supercharge.dashboard import _write_pidfile
@@ -532,3 +534,206 @@ class TestSingleton:
             _run_server(host="127.0.0.1", port=9333)
 
             mock_uvicorn.assert_called_once()
+
+
+# ── Project endpoint tests ───────────────────────────────────────────────────
+
+
+class TestProjectEndpoints:
+    """Tests for project-aware query functions and API endpoints."""
+
+    PROJECT_PATH = "/home/user/project-a"
+    PROJECT_SLUG = "-home-user-project-a"
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, tmp_path):
+        self.tmp_path = tmp_path
+
+        # Create DB schema only (no rows via _make_db helper)
+        db = _make_db(tmp_path)
+
+        # Insert test data with project column via direct SQL
+        conn = sqlite3.connect(str(db))
+
+        # Events for s1: orchestrator + code agent with tool_use events
+        # Events for s2: orchestrator + plan agent with tool_use events
+        conn.executemany(
+            "INSERT INTO events (timestamp, event_type, session_id, agent_id, "
+            "agent_type, task_uuid, worker_id, parent_id, tool_name, detail, project) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                # s1 events
+                (
+                    "2026-01-10T10:00:00+00:00", "session_start", "s1",
+                    "a1", "orchestrator", "", "", "", "", "", self.PROJECT_PATH,
+                ),
+                (
+                    "2026-01-10T10:00:01+00:00", "task_init", "s1",
+                    "a2", "code", "t1", "", "orchestrator:s1", "", "", self.PROJECT_PATH,
+                ),
+                (
+                    "2026-01-10T10:00:02+00:00", "tool_use", "s1",
+                    "a2", "code", "t1", "", "", "Bash", "ls", self.PROJECT_PATH,
+                ),
+                (
+                    "2026-01-10T10:00:03+00:00", "tool_use", "s1",
+                    "a2", "code", "t1", "", "", "Read", "file.py", self.PROJECT_PATH,
+                ),
+                # s2 events
+                (
+                    "2026-01-10T10:01:00+00:00", "session_start", "s2",
+                    "b1", "orchestrator", "", "", "", "", "", self.PROJECT_PATH,
+                ),
+                (
+                    "2026-01-10T10:01:01+00:00", "task_init", "s2",
+                    "b2", "plan", "t2", "", "orchestrator:s2", "", "", self.PROJECT_PATH,
+                ),
+                (
+                    "2026-01-10T10:01:02+00:00", "tool_use", "s2",
+                    "b2", "plan", "t2", "", "", "Read", "plan.md", self.PROJECT_PATH,
+                ),
+                (
+                    "2026-01-10T10:01:03+00:00", "tool_use", "s2",
+                    "b2", "plan", "t2", "", "", "Write", "result.md", self.PROJECT_PATH,
+                ),
+            ],
+        )
+
+        # Projects table
+        conn.execute(
+            "INSERT INTO projects (project_path, project_slug, display_name, user_edited, last_updated) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (self.PROJECT_PATH, self.PROJECT_SLUG, "Project A", 0, "2026-01-10T10:00:00+00:00"),
+        )
+
+        # Session stats with project and project_name
+        conn.executemany(
+            "INSERT INTO session_stats (session_id, custom_name, total_input_tokens, "
+            "total_output_tokens, total_cache_creation_tokens, total_cache_read_tokens, "
+            "message_count, last_parsed_line, project, project_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("s1", "", 1000, 500, 100, 200, 10, 0, self.PROJECT_PATH, "project-a"),
+                ("s2", "", 2000, 1000, 200, 400, 20, 0, self.PROJECT_PATH, "project-a"),
+            ],
+        )
+
+        # Agent token stats
+        conn.executemany(
+            "INSERT INTO agent_token_stats (agent_id, session_id, agent_type, transcript_path, "
+            "total_input_tokens, total_output_tokens, total_cache_creation_tokens, "
+            "total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("a1", "s1", "orchestrator", "", 500, 250, 50, 100, 5, 0),
+                ("a2", "s1", "code", "", 500, 250, 50, 100, 5, 0),
+                ("b1", "s2", "orchestrator", "", 1000, 500, 100, 200, 10, 0),
+                ("b2", "s2", "plan", "", 1000, 500, 100, 200, 10, 0),
+            ],
+        )
+
+        conn.commit()
+        conn.close()
+
+        self.db_patch = _patch_db(tmp_path)
+        self.db_patch.start()
+        yield
+        self.db_patch.stop()
+
+    @pytest.fixture()
+    def client(self):
+        from supercharge.dashboard import _create_app
+
+        app = _create_app()
+        return TestClient(app)
+
+    # ── Direct query function tests ──────────────────────────────────────────
+
+    def test_query_projects_returns_aggregated_stats(self):
+        import supercharge.metrics as metrics
+
+        projects = metrics._query_projects()
+
+        assert len(projects) == 1
+        proj = projects[0]
+        assert proj["project_path"] == self.PROJECT_PATH
+        assert proj["project_slug"] == self.PROJECT_SLUG
+        # 2 distinct sessions in session_stats for this project
+        assert proj["session_count"] == 2
+        # 8 events total across both sessions
+        assert proj["total_events"] == 8
+        # 4 tool_use events (2 per session)
+        assert proj["total_tool_calls"] == 4
+        # Sum of total_input_tokens from session_stats: 1000 + 2000
+        assert proj["total_input_tokens"] == 3000
+
+    def test_query_project_sessions_filters_correctly(self):
+        import supercharge.metrics as metrics
+
+        sessions = metrics._query_project_sessions(self.PROJECT_SLUG)
+
+        assert len(sessions) == 2
+        session_ids = {s["session_id"] for s in sessions}
+        assert session_ids == {"s1", "s2"}
+
+        # Each session should include project and project_name from session_stats
+        for session in sessions:
+            assert "project" in session
+            assert "project_name" in session
+            assert session["project"] == self.PROJECT_PATH
+
+    def test_query_project_sessions_empty_for_unknown(self):
+        import supercharge.metrics as metrics
+
+        result = metrics._query_project_sessions("unknown-slug")
+        assert result == []
+
+    # ── HTTP endpoint tests ──────────────────────────────────────────────────
+
+    def test_put_project_name_updates(self, client):
+        resp = client.put(
+            f"/api/projects/{self.PROJECT_SLUG}/name",
+            json={"name": "New Name"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["display_name"] == "New Name"
+        assert data["user_edited"] == 1
+
+    def test_put_project_name_missing_field(self, client):
+        resp = client.put(
+            f"/api/projects/{self.PROJECT_SLUG}/name",
+            json={},
+        )
+        assert resp.status_code == 400
+
+    def test_put_project_name_unknown_project(self, client):
+        resp = client.put(
+            "/api/projects/nonexistent-slug/name",
+            json={"name": "Test Name"},
+        )
+        assert resp.status_code == 404
+
+    def test_get_projects_endpoint(self, client):
+        resp = client.get("/api/projects")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        proj = next((p for p in data if p["project_path"] == self.PROJECT_PATH), None)
+        assert proj is not None
+        assert proj["project_slug"] == self.PROJECT_SLUG
+        assert proj["session_count"] == 2
+
+    def test_get_project_sessions_endpoint(self, client):
+        resp = client.get(f"/api/projects/{self.PROJECT_SLUG}/sessions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+        session_ids = {s["session_id"] for s in data}
+        assert session_ids == {"s1", "s2"}
+
+    def test_get_project_sessions_unknown(self, client):
+        resp = client.get("/api/projects/unknown-slug/sessions")
+        assert resp.status_code == 404
