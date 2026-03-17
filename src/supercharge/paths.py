@@ -90,8 +90,8 @@ def _cli_data_dir() -> Path:
 
 
 def _user_methodology_dir() -> Path:
-    """Return user-level methodology memory dir: ~/.claude/SuperchargeAI/memory/methodology/."""
-    return Path.home() / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+    """Return user-level methodology memory dir: <config>/SuperchargeAI/memory/methodology/."""
+    return _user_config_dir() / "SuperchargeAI" / "memory" / "methodology"
 
 
 def _project_memory_dir(project_dir: str) -> Path:

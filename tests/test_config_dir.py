@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from supercharge.hooks import _ensure_project_dir
-from supercharge.paths import _hook_data_dir, _user_config_dir
+from supercharge.paths import _hook_data_dir, _user_config_dir, _user_methodology_dir
 from supercharge.permissions import (
     _add_user_permissions,
     _remove_user_permissions,
@@ -68,6 +68,23 @@ class TestUserSettingsPath:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/custom/dir")
         result = _user_settings_path()
         assert result == Path("/custom/dir") / "settings.json"
+
+
+# ── _user_methodology_dir() ──────────────────────────────────────────────
+
+
+class TestUserMethodologyDirConfigDir:
+    """_user_methodology_dir() uses _user_config_dir()."""
+
+    def test_default(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        result = _user_methodology_dir()
+        assert result == Path.home() / ".claude" / "SuperchargeAI" / "memory" / "methodology"
+
+    def test_custom_dir(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/custom/dir")
+        result = _user_methodology_dir()
+        assert result == Path("/custom/dir") / "SuperchargeAI" / "memory" / "methodology"
 
 
 # ── _hook_data_dir() plugin cache fallback ───────────────────────────────────

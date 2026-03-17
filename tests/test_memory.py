@@ -618,13 +618,19 @@ class TestSpawnBackgroundMemory:
 
 
 class TestUserMethodologyDir:
-    def test_returns_path_under_home(self):
+    def test_returns_path_under_home(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         result = _user_methodology_dir()
         assert result == Path.home() / ".claude" / "SuperchargeAI" / "memory" / "methodology"
 
     def test_returns_path_type(self):
         result = _user_methodology_dir()
         assert isinstance(result, Path)
+
+    def test_respects_claude_config_dir(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/custom/config")
+        result = _user_methodology_dir()
+        assert result == Path("/custom/config") / "SuperchargeAI" / "memory" / "methodology"
 
 
 class TestProjectMemoryDir:
