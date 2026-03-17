@@ -393,6 +393,12 @@ body {
   overflow-x: auto;
   min-height: 200px;
 }
+.trace-container.compact {
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}
 .trace-container svg {
   display: block;
 }

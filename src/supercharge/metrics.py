@@ -2047,7 +2047,7 @@ def _query_global_tool_stats() -> dict:
         supercharge_count = 0
 
         for row in rows:
-            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "unknown"
+            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "orchestrator"
             tool = row["tool_name"]
             count = row["count"]
 
@@ -2295,7 +2295,7 @@ def _query_project_tool_stats(project_path: str) -> dict:
         supercharge_count = 0
 
         for row in rows:
-            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "unknown"
+            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "orchestrator"
             tool = row["tool_name"]
             count = row["count"]
 
@@ -2471,7 +2471,7 @@ def _query_project_tokens(project_slug: str) -> list[dict]:
 
         return [
             {
-                "agent_type": _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "unknown",
+                "agent_type": _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "orchestrator",
                 "total_input_tokens": row["total_input_tokens"] or 0,
                 "total_output_tokens": row["total_output_tokens"] or 0,
                 "total_cache_creation_tokens": row["total_cache_creation_tokens"] or 0,

@@ -328,6 +328,21 @@ class TestApiEndpoints:
             data = resp.json()
             assert "root" in data
 
+    def test_browse_project_memories(self, client):
+        with patch("supercharge.dashboard.browse._build_project_memories_response") as mock:
+            mock.return_value = {"categories": {"project": [{"path": "project/foo.md", "title": "Foo"}]}}
+            resp = client.get("/api/browse/project-memories")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "project" in data["categories"]
+
+    def test_browse_memory_content_source_param(self, client):
+        with patch("supercharge.dashboard.browse._read_memory_content") as mock:
+            mock.return_value = {"path": "project/foo.md", "title": "Foo", "keywords": [], "content": "test"}
+            resp = client.get("/api/browse/memories/project%2Ffoo.md?source=project")
+            assert resp.status_code == 200
+            mock.assert_called_once_with("project/foo.md", source="project")
+
 
 # ── Tools query function tests ───────────────────────────────────────────────
 

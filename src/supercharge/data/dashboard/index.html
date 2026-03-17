@@ -9,6 +9,7 @@
   <script src="/static/cytoscape-dagre.js"></script>
   <script src="/static/d3.min.js"></script>
   <script src="/static/marked.min.js"></script>
+  <script src="/static/morphdom.min.js"></script>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -117,6 +118,41 @@
     let cytoscapeInstances = {};
     let activeViews = {};
     let refreshTimer = null;
+    var prevSessionsJSON = '';
+    var prevProjectsJSON = '';
+
+    // ===== DOM diffing helper =====
+    function morphdomUpdate(el, html) {
+      if (typeof morphdom === 'undefined') {
+        el.innerHTML = html;
+        return;
+      }
+      var wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
+      morphdom(el, wrapper, {
+        childrenOnly: true,
+        onBeforeElUpdated: function(fromEl, toEl) {
+          // Preserve expanded/collapsed states
+          if (fromEl.classList && fromEl.classList.contains('expanded') && !toEl.classList.contains('expanded')) {
+            return false;
+          }
+          // Preserve display:none/block on child containers toggled by user
+          if (fromEl.classList && fromEl.classList.contains('decomp-children')) {
+            toEl.style.display = fromEl.style.display;
+            if (fromEl.innerHTML && fromEl.style.display !== 'none') {
+              toEl.innerHTML = fromEl.innerHTML;
+            }
+          }
+          if (fromEl.classList && fromEl.classList.contains('project-time-children')) {
+            toEl.style.display = fromEl.style.display;
+            if (fromEl.innerHTML && fromEl.style.display !== 'none') {
+              toEl.innerHTML = fromEl.innerHTML;
+            }
+          }
+          return true;
+        }
+      });
+    }
 
     // ===== Tab switching =====
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
@@ -127,6 +163,10 @@
         var panel = document.getElementById('tab-' + btn.dataset.tab);
         panel.classList.add('active');
 
+        if (btn.dataset.tab === 'sessions') {
+          // Re-render sessions view if currentProject changed while on another tab
+          setGlobalUnit(globalUnit);
+        }
         if (btn.dataset.tab === 'stats') loadStats();
         if (btn.dataset.tab === 'browse') loadBrowse();
       });
@@ -366,56 +406,29 @@
           projectSessionsCache[currentProject.slug] = results[2];
         }
 
+        // Hash-based skip: if data hasn't changed, skip re-render entirely
+        var newSessionsJSON = JSON.stringify(sessionsCache);
+        var newProjectsJSON = JSON.stringify(projectsCache);
+        if (newSessionsJSON === prevSessionsJSON && newProjectsJSON === prevProjectsJSON) {
+          return; // No changes, skip re-render
+        }
+        prevSessionsJSON = newSessionsJSON;
+        prevProjectsJSON = newProjectsJSON;
+
         // Re-render based on current view state
+        // morphdomUpdate preserves expanded states via onBeforeElUpdated callback
         if (globalUnit === 'time') {
           if (currentProject) {
-            // Re-render the project session view (with back button)
             await zoomIntoProject(currentProject.slug);
-            // Re-expand session cards that were open
-            expandedTimeSessionIds.forEach(function(sid) {
-              var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
-              if (card && !card.classList.contains('expanded')) {
-                var head = card.querySelector('.session-head');
-                if (head) toggleSession(head);
-              }
-            });
           } else {
             renderProjectTimeView();
-            // Re-expand previously expanded projects and sessions in time view
-            var timeExpanded = Array.from(expandedTimeProjectSlugs);
-            var timeExpandedSessions = Array.from(expandedTimeSessionIds);
-            expandedTimeProjectSlugs.clear();
-            for (var _i = 0; _i < timeExpanded.length; _i++) {
-              var slug = timeExpanded[_i];
-              var header = document.querySelector('.project-header[data-project-slug="' + slug + '"]');
-              if (header) {
-                await toggleProjectTimeExpand(header, slug);
-                // Re-expand session cards within this project
-                timeExpandedSessions.forEach(function(sid) {
-                  var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
-                  if (card && !card.classList.contains('expanded')) {
-                    var head = card.querySelector('.session-head');
-                    if (head) toggleSession(head);
-                  }
-                });
-              }
-            }
           }
         } else {
           // Decomp view
           if (currentProject) {
             renderDecompSessionLevel();
           } else if (decompStack.length === 0 || (decompStack[0] && decompStack[0].level === 'projects')) {
-            // Invalidate session cache so expanded projects get fresh data
-            var expandedSlugs = Array.from(expandedProjectSlugs);
-            expandedSlugs.forEach(function(s) { delete projectSessionsCache[s]; });
-            expandedProjectSlugs.clear();
             renderDecompProjectLevel();
-            // Re-expand previously expanded projects in decomp view
-            expandedSlugs.forEach(function(slug) {
-              var row = document.querySelector('.decomp-bar-row[data-project-slug="' + slug + '"]');
-              if (row) decompToggleProject(row, slug);
-            });
           }
           // else: user drilled deeper — don't disturb the current drill view
         }
@@ -460,7 +473,7 @@
         return;
       }
 
-      el.innerHTML = sessions.map(function(s) {
+      var newHtml = sessions.map(function(s) {
         var flowPills = (s.agent_types || []).map(function(t) {
           return '<span class="flow-pill" style="background:' + agentHex(t) + '">' + esc(t) + '</span>';
         }).join('<span class="flow-arrow">&rsaquo;</span>');
@@ -501,14 +514,7 @@
         '</div>';
       }).join('');
 
-      // Re-expand sessions that were open before the full re-render
-      Object.keys(expandedSids).forEach(function(sid) {
-        var card = el.querySelector('.session-card[data-sid="' + sid + '"]');
-        if (card) {
-          var head = card.querySelector('.session-head');
-          if (head) toggleSession(head);
-        }
-      });
+      morphdomUpdate(el, newHtml);
     }
 
     function startRenameSession(event, sid) {
@@ -559,14 +565,14 @@
       card.classList.toggle('expanded');
       var sid = card.dataset.sid;
       if (wasExpanded) {
-        expandedTimeSessionIds.delete(sid);
+        expandedSessionIds.delete(sid);
         if (cytoscapeInstances[sid]) {
           cytoscapeInstances[sid].destroy();
           delete cytoscapeInstances[sid];
         }
         return;
       }
-      expandedTimeSessionIds.add(sid);
+      expandedSessionIds.add(sid);
 
       var sid = card.dataset.sid;
       var body = card.querySelector('.session-body');
@@ -1062,9 +1068,35 @@
         });
     }
 
+    function renderSessionOnlyTrace(container, sid, sessionData) {
+      // Compact inline for orchestrator-only sessions
+      container.classList.add('compact');
+      var inner = container.closest('.session-body-inner');
+      if (inner) inner.style.padding = '0';
+      var parts = [];
+      if (sessionData.input_tokens) parts.push('In: ' + fmtTokens(sessionData.input_tokens));
+      if (sessionData.output_tokens) parts.push('Out: ' + fmtTokens(sessionData.output_tokens));
+      var cacheTotal = (sessionData.cache_creation_tokens || 0) + (sessionData.cache_read_tokens || 0);
+      if (cacheTotal) parts.push('Cache: ' + fmtTokens(cacheTotal));
+      if (sessionData.tool_call_count) parts.push(sessionData.tool_call_count + ' tools');
+      if (sessionData.duration_seconds) parts.push(fmtDuration(sessionData.duration_seconds));
+      container.innerHTML = '<div style="padding:4px 10px;font-size:10px;color:var(--text-secondary);opacity:0.5">'
+        + (parts.length > 0 ? 'No subagents · ' + esc(parts.join(' · ')) : 'No subagents')
+        + '</div>';
+    }
+
     function renderTrace(container, spans, sid, sessionData) {
+      if ((!spans || spans.length === 0) && !sessionData) {
+        container.classList.add('compact');
+        var inner = container.closest('.session-body-inner');
+        if (inner) inner.style.padding = '0';
+        container.innerHTML = '<div style="padding:4px 10px;font-size:10px;color:var(--text-secondary);opacity:0.5">No trace data</div>';
+        return;
+      }
+
+      // No agent/worker spans but we have session data — render session bar only
       if (!spans || spans.length === 0) {
-        container.innerHTML = '<div class="empty-state">No span data yet. Spans appear after reinstalling with SubagentStop hook.</div>';
+        renderSessionOnlyTrace(container, sid, sessionData);
         return;
       }
 
@@ -1867,7 +1899,7 @@
           // Expand all projects in time view
           document.querySelectorAll('.project-header[data-project-slug]').forEach(function(header) {
             var slug = header.dataset.projectSlug;
-            if (!expandedTimeProjectSlugs.has(slug)) {
+            if (!expandedProjectSlugs.has(slug)) {
               toggleProjectTimeExpand(header, slug);
             }
           });
@@ -1907,7 +1939,7 @@
           });
         } else {
           // Collapse all projects in time view
-          Array.from(expandedTimeProjectSlugs).forEach(function(slug) {
+          Array.from(expandedProjectSlugs).forEach(function(slug) {
             var header = document.querySelector('.project-header[data-project-slug="' + slug + '"]');
             if (header) toggleProjectTimeExpand(header, slug);
           });
@@ -2033,7 +2065,7 @@
         html += '</div></div>';
       }
 
-      el.innerHTML = html;
+      morphdomUpdate(el, html);
     }
 
     function setStatsViewMode(mode) {
@@ -2399,7 +2431,8 @@
       expandEl.innerHTML = '<div class="empty-state" style="padding:10px">Loading...</div>';
       try {
         var path = card.dataset.path;
-        var resp = await fetch('/api/browse/memories/' + encodeURIComponent(path));
+        var source = card.dataset.source || 'framework';
+        var resp = await fetch('/api/browse/memories/' + encodeURIComponent(path) + '?source=' + source);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var data = await resp.json();
         var content = data.content || '';
@@ -2416,52 +2449,157 @@
       }
     }
 
-    // -- Projects (Tasks) sub-tab --
+    // -- Projects sub-tab --
+    var browseProjectDrill = null; // {slug, name, path} when drilled into a project
+
     async function loadProjectTasks() {
       var el = document.getElementById('browse-projects');
-      try {
-        var resp = await fetch('/api/browse/tasks');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        var data = await resp.json();
-        renderProjectTasks(data, el);
-      } catch(e) {
-        el.innerHTML = '<div class="empty-state">Failed to load tasks</div>';
+      // Sync from Sessions tab: use currentProject or first expanded project
+      if (!browseProjectDrill) {
+        var syncSlug = null;
+        if (currentProject) {
+          syncSlug = currentProject.slug;
+        } else if (expandedProjectSlugs.size > 0) {
+          syncSlug = expandedProjectSlugs.values().next().value;
+        }
+        if (syncSlug) {
+          var projMatch = projectsCache.find(function(p) { return p.project_slug === syncSlug; });
+          if (projMatch) {
+            browseProjectDrill = { slug: syncSlug, name: projMatch.display_name || syncSlug, path: projMatch.project_path || '' };
+          }
+        }
+      }
+      if (browseProjectDrill) {
+        await loadProjectDetail(browseProjectDrill, el);
+      } else {
+        await loadProjectList(el);
       }
     }
 
-    function renderProjectTasks(data, el) {
-      var active = data.active || {};
-      var archived = data.archived || [];
-      var agentTypes = Object.keys(active).sort();
+    async function loadProjectList(el) {
+      try {
+        var resp = await fetch('/api/projects');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var projects = await resp.json();
+        renderBrowseProjectList(projects, el);
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load projects</div>';
+      }
+    }
 
-      if (agentTypes.length === 0 && archived.length === 0) {
-        el.innerHTML = '<div class="empty-state">No tasks found</div>';
+    function renderBrowseProjectList(projects, el) {
+      if (!projects || projects.length === 0) {
+        el.innerHTML = '<div class="empty-state">No projects found</div>';
         return;
       }
-
       var html = '';
-      agentTypes.forEach(function(atype) {
-        var tasks = active[atype];
-        if (!tasks || tasks.length === 0) return;
-        var color = agentColor(atype);
-        html += '<div class="task-group">';
-        html += '<div class="task-group-header"><span class="badge badge-' + color + '">' + esc(atype) + '</span> <span class="task-group-count">' + tasks.length + ' task' + (tasks.length !== 1 ? 's' : '') + '</span></div>';
-        tasks.forEach(function(t) {
-          var statusClass = t.status === 'completed' ? 'status-completed' : 'status-pending';
-          var shortUuid = (t.uuid || '').substring(0, 8);
-          html += '<div class="task-card" data-uuid="' + esc(t.uuid) + '" onclick="toggleTaskCard(this)">';
-          html += '<div class="task-card-head">';
-          html += '<span class="status-dot ' + statusClass + '"></span>';
-          html += '<span class="badge badge-' + color + '" style="font-size:9px;padding:0 4px;">' + esc(atype) + '</span>';
-          html += '<span class="task-card-uuid">' + esc(shortUuid) + '</span>';
-          html += '<span class="task-card-title">' + esc(t.title || 'Untitled') + '</span>';
-          html += '<span class="task-card-date">' + (t.created_at ? esc(fmtTime(t.created_at)) : '') + '</span>';
-          html += '</div>';
-          html += '<div class="task-expand" style="display:none"></div>';
-          html += '</div>';
-        });
+      projects.sort(function(a, b) {
+        return (b.total_tokens || 0) - (a.total_tokens || 0);
+      });
+      projects.forEach(function(p) {
+        var name = p.display_name || p.project_slug;
+        var sessions = p.session_count || 0;
+        var tokens = (p.total_tokens || 0);
+        html += '<div class="project-header" style="cursor:pointer" onclick="browseProjectDrillIn(\'' + esc(p.project_slug) + '\', \'' + esc(name) + '\', \'' + esc(p.project_path || '') + '\')">';
+        html += '<span class="project-expand-arrow">&#9654;</span>';
+        html += '<span class="project-name">' + esc(name) + '</span>';
+        html += '<span class="project-meta">' + sessions + ' sessions · ' + fmtTokens(tokens) + ' tokens</span>';
         html += '</div>';
       });
+      el.innerHTML = html;
+    }
+
+    function browseProjectDrillIn(slug, name, path) {
+      browseProjectDrill = { slug: slug, name: name, path: path };
+      // Sync to Sessions tab — set currentProject so switching back shows the same project
+      if (!currentProject || currentProject.slug !== slug) {
+        currentProject = { slug: slug, name: name };
+      }
+      loadProjectTasks();
+    }
+
+    function browseProjectBack() {
+      browseProjectDrill = null;
+      currentProject = null;
+      loadProjectTasks();
+    }
+
+    async function loadProjectDetail(proj, el) {
+      el.innerHTML = '<div class="empty-state">Loading...</div>';
+      try {
+        var pathParam = proj.path ? '?project_path=' + encodeURIComponent(proj.path) : '';
+        var results = await Promise.all([
+          fetch('/api/browse/tasks' + pathParam).then(function(r) { return r.json(); }),
+          fetch('/api/browse/project-memories' + pathParam).then(function(r) { return r.json(); })
+        ]);
+        renderProjectDetail(proj, results[0], results[1], el);
+      } catch(e) {
+        el.innerHTML = '<div class="empty-state">Failed to load project data</div>';
+      }
+    }
+
+    function renderProjectDetail(proj, taskData, memData, el) {
+      var active = taskData.active || {};
+      var archived = taskData.archived || [];
+      var agentTypes = Object.keys(active).sort();
+      var memCategories = memData.categories || {};
+      var memItems = memCategories.project || [];
+
+      var html = '<div class="back-button" onclick="browseProjectBack()">&larr; All Projects</div>';
+      html += '<div style="font-size:14px;font-weight:600;color:var(--text-bright);margin-bottom:12px">' + esc(proj.name) + '</div>';
+
+      // Project memories section
+      if (memItems.length > 0) {
+        html += '<div class="memory-category">Memories (' + memItems.length + ')</div>';
+        memItems.forEach(function(mem) {
+          var keywords = '';
+          if (mem.keywords && mem.keywords.length > 0) {
+            keywords = '<div class="memory-tags">';
+            mem.keywords.forEach(function(kw) {
+              keywords += '<span class="memory-tag">' + esc(kw) + '</span>';
+            });
+            keywords += '</div>';
+          }
+          var updated = mem.updated ? '<span class="memory-date">' + esc(mem.updated) + '</span>' : '';
+          var preview = mem.preview ? '<div class="memory-preview">' + esc(mem.preview) + '</div>' : '';
+          html += '<div class="memory-card" data-path="' + esc(mem.path) + '" data-source="project" onclick="toggleMemoryCard(this)">';
+          html += '<div class="memory-card-head">';
+          html += '<span class="memory-title">' + esc(mem.title || mem.path) + '</span>';
+          html += updated;
+          html += '</div>';
+          html += keywords;
+          html += preview;
+          html += '<div class="memory-expand" style="display:none"></div>';
+          html += '</div>';
+        });
+      }
+
+      // Tasks section
+      if (agentTypes.length > 0) {
+        html += '<div class="memory-category">Tasks</div>';
+        agentTypes.forEach(function(atype) {
+          var tasks = active[atype];
+          if (!tasks || tasks.length === 0) return;
+          var color = agentColor(atype);
+          html += '<div class="task-group">';
+          html += '<div class="task-group-header"><span class="badge badge-' + color + '">' + esc(atype) + '</span> <span class="task-group-count">' + tasks.length + ' task' + (tasks.length !== 1 ? 's' : '') + '</span></div>';
+          tasks.forEach(function(t) {
+            var statusClass = t.status === 'completed' ? 'status-completed' : 'status-pending';
+            var shortUuid = (t.uuid || '').substring(0, 8);
+            html += '<div class="task-card" data-uuid="' + esc(t.uuid) + '" onclick="toggleTaskCard(this)">';
+            html += '<div class="task-card-head">';
+            html += '<span class="status-dot ' + statusClass + '"></span>';
+            html += '<span class="badge badge-' + color + '" style="font-size:9px;padding:0 4px;">' + esc(atype) + '</span>';
+            html += '<span class="task-card-uuid">' + esc(shortUuid) + '</span>';
+            html += '<span class="task-card-title">' + esc(t.title || 'Untitled') + '</span>';
+            html += '<span class="task-card-date">' + (t.created_at ? esc(fmtTime(t.created_at)) : '') + '</span>';
+            html += '</div>';
+            html += '<div class="task-expand" style="display:none"></div>';
+            html += '</div>';
+          });
+          html += '</div>';
+        });
+      }
 
       if (archived.length > 0) {
         html += '<details class="task-archive-section"><summary class="task-archive-header">Archived (' + archived.length + ')</summary>';
@@ -2480,6 +2618,10 @@
           html += '</div>';
         });
         html += '</div></details>';
+      }
+
+      if (memItems.length === 0 && agentTypes.length === 0 && archived.length === 0) {
+        html += '<div class="empty-state">No memories or tasks for this project</div>';
       }
 
       el.innerHTML = html;
@@ -2579,10 +2721,8 @@
     var projectsCache = []; // cached /api/projects response
     var currentProject = null; // {slug, name} when zoomed into a project, null at project level
     var projectSessionsCache = {}; // slug -> sessions array
-    var expandedProjectSlugs = new Set(); // track expanded projects in decomp view
-    var expandedTimeProjectSlugs = new Set(); // track expanded projects in time view
-    var expandedSessionIds = new Set(); // track expanded sessions within expanded projects
-    var expandedTimeSessionIds = new Set(); // track expanded session cards in time view
+    var expandedProjectSlugs = new Set(); // track expanded projects across all tabs
+    var expandedSessionIds = new Set(); // track expanded sessions across all tabs
 
     function setGlobalUnit(unit) {
       globalUnit = unit;
@@ -2603,9 +2743,18 @@
         collapseBtn.style.display = '';
         sortSelector.style.display = 'none';
         if (currentProject) {
-          zoomIntoProject(currentProject.slug);
+          zoomIntoProject(currentProject.slug).then(function() {
+            expandedSessionIds.forEach(function(sid) {
+              var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
+              if (card && !card.classList.contains('expanded')) {
+                var head = card.querySelector('.session-head');
+                if (head) toggleSession(head);
+              }
+            });
+          });
         } else {
           renderProjectTimeView();
+          reExpandTimeProjects();
         }
       } else {
         sessionList.style.display = 'none';
@@ -2618,8 +2767,36 @@
           decompZoomProject(currentProject.slug);
         } else {
           renderDecompProjectLevel();
+          reExpandDecompProjects();
         }
       }
+    }
+
+    async function reExpandTimeProjects() {
+      var slugs = Array.from(expandedProjectSlugs);
+      expandedProjectSlugs.clear();
+      for (var i = 0; i < slugs.length; i++) {
+        var header = document.querySelector('.project-header[data-project-slug="' + slugs[i] + '"]');
+        if (header) {
+          await toggleProjectTimeExpand(header, slugs[i]);
+          expandedSessionIds.forEach(function(sid) {
+            var card = document.querySelector('.session-card[data-sid="' + sid + '"]');
+            if (card && !card.classList.contains('expanded')) {
+              var head = card.querySelector('.session-head');
+              if (head) toggleSession(head);
+            }
+          });
+        }
+      }
+    }
+
+    function reExpandDecompProjects() {
+      var slugs = Array.from(expandedProjectSlugs);
+      expandedProjectSlugs.clear();
+      slugs.forEach(function(slug) {
+        var row = document.querySelector('.decomp-bar-row[data-project-slug="' + slug + '"]');
+        if (row) decompToggleProject(row, slug);
+      });
     }
 
     function setDecompSort(sort) {
@@ -2709,7 +2886,7 @@
       });
 
       html += '</div>';
-      el.innerHTML = html;
+      morphdomUpdate(el, html);
     }
 
     // Inline expand/collapse a session's children
@@ -2797,7 +2974,8 @@
         });
 
         if (groups.length === 0) {
-          html = '<div class="empty-state" style="font-size:11px">No data for this unit</div>';
+          // No subagent data — session bar already shows the total
+          html = '<div style="font-size:10px;padding:2px 8px;opacity:0.5;color:var(--text-secondary)">No subagents</div>';
         }
 
         // Update parent bar: ghost background at original width, fill shrinks to unattributed
@@ -2994,9 +3172,12 @@
         }
 
         var sorted = Object.entries(typeGroups).sort(function(a, b) { return b[1].value - a[1].value; });
+        var totalVal = sorted.reduce(function(s, e) { return s + e[1].value; }, 0);
+
+        // If no subagent data, nothing to decompose — session bar already shows the total
+
         var maxVal = sorted.length > 0 ? sorted[0][1].value : 1;
         if (maxVal === 0) maxVal = 1;
-        var totalVal = sorted.reduce(function(s, e) { return s + e[1].value; }, 0);
 
         if (currentProject) {
           decompStack = [
@@ -3329,7 +3510,7 @@
       });
 
       html += '</div>';
-      el.innerHTML = html;
+      morphdomUpdate(el, html);
     }
 
     // Inline expand a project to show SESSION bars (expandable to agent types)
@@ -3343,6 +3524,7 @@
       if (childDiv.style.display !== 'none') {
         childDiv.style.display = 'none';
         childDiv.innerHTML = '';
+        rowEl.classList.remove('expanded');
         expandedProjectSlugs.delete(slug);
         var ghost = rowEl.querySelector('.decomp-bar-ghost');
         if (ghost) ghost.remove();
@@ -3357,6 +3539,7 @@
       }
 
       expandedProjectSlugs.add(slug);
+      rowEl.classList.add('expanded');
       childDiv.style.display = 'block';
       childDiv.innerHTML = '<div class="empty-state" style="font-size:11px">Loading...</div>';
 
@@ -3479,7 +3662,7 @@
         '<div class="project-time-children" id="project-time-children-' + esc(slug) + '" style="display:none;margin-left:20px;margin-bottom:4px;"></div>';
       }).join('');
 
-      el.innerHTML = html;
+      morphdomUpdate(el, html);
     }
 
     // Toggle inline expand for a project in Time view (show session cards)
@@ -3491,12 +3674,14 @@
       if (childDiv.style.display !== 'none') {
         childDiv.style.display = 'none';
         childDiv.innerHTML = '';
+        headerEl.classList.remove('expanded');
         headerEl.style.borderColor = '';
-        expandedTimeProjectSlugs.delete(slug);
+        expandedProjectSlugs.delete(slug);
         return;
       }
 
-      expandedTimeProjectSlugs.add(slug);
+      expandedProjectSlugs.add(slug);
+      headerEl.classList.add('expanded');
       childDiv.style.display = 'block';
       childDiv.innerHTML = '<div class="empty-state" style="font-size:11px;padding:8px 14px;">Loading...</div>';
       headerEl.style.borderColor = 'var(--accent-dim)';
@@ -3597,7 +3782,7 @@
         html += sessions.map(buildSessionCardHtml).join('');
       }
 
-      el.innerHTML = html;
+      morphdomUpdate(el, html);
     }
 
     // ===== Auto-refresh =====

@@ -11,7 +11,7 @@ import itertools
 from datetime import datetime
 from pathlib import Path
 
-from supercharge.paths import _read_frontmatter
+from supercharge.paths import _read_frontmatter, _user_config_dir
 
 
 def _walk_tree(root: Path) -> dict:
@@ -239,32 +239,17 @@ def _extract_preview(path: Path, max_lines: int = 3) -> str:
         return ""
 
 
-def _build_memories_response(project_dir: Path | None = None) -> dict:
-    """Build a categorised listing of all memory files.
-
-    Walks ``.claude/SuperchargeAI/memory/`` recursively, reads YAML
-    frontmatter from each ``.md`` file, and groups entries by category
-    (subdirectory path relative to ``memory/``).
-
-    Returns::
-
-        {"categories": {"project": [{"path": "project/foo.md", ...}], ...}}
-    """
-    sa_root = _resolve_sa_root(project_dir)
-    memory_root = sa_root / "memory"
+def _scan_memory_dir(memory_root: Path) -> dict[str, list[dict]]:
+    """Scan a memory directory and return entries grouped by category."""
     categories: dict[str, list[dict]] = {}
-
     if not memory_root.is_dir():
-        return {"categories": categories}
-
+        return categories
     for md_file in sorted(memory_root.rglob("*.md")):
         if not md_file.is_file():
             continue
         rel = md_file.relative_to(memory_root)
-        # Category is the first directory component, or "root" for top-level
         parts = rel.parts
         category = parts[0] if len(parts) > 1 else "root"
-
         fm = _read_frontmatter(md_file)
         entry: dict = {
             "path": str(rel),
@@ -275,12 +260,47 @@ def _build_memories_response(project_dir: Path | None = None) -> dict:
             "preview": _extract_preview(md_file),
         }
         categories.setdefault(category, []).append(entry)
+    return categories
 
-    return {"categories": categories}
+
+def _build_memories_response(project_dir: Path | None = None) -> dict:
+    """Build methodology memory listing from user-level config.
+
+    Reads from ``~/.claude/SuperchargeAI/memory/`` (the global methodology
+    memory directory). This is used by the Framework tab.
+
+    Returns::
+
+        {"categories": {"behavior": [...], "flows": [...]}}
+    """
+    memory_root = _user_config_dir() / "SuperchargeAI" / "memory"
+    return {"categories": _scan_memory_dir(memory_root)}
 
 
-def _read_memory_content(rel_path: str, project_dir: Path | None = None) -> dict | None:
+def _build_project_memories_response(project_dir: Path | None = None) -> dict:
+    """Build project-level memory listing.
+
+    Reads from ``<project>/.claude/SuperchargeAI/memory/`` (specifically
+    the ``project/`` subdirectory). Used by the Projects tab.
+
+    Returns::
+
+        {"categories": {"project": [...]}}
+    """
+    sa_root = _resolve_sa_root(project_dir)
+    memory_root = sa_root / "memory"
+    categories = _scan_memory_dir(memory_root)
+    # Only include project-specific categories (exclude stamps, etc.)
+    project_cats = {k: v for k, v in categories.items() if k == "project"}
+    return {"categories": project_cats}
+
+
+def _read_memory_content(rel_path: str, project_dir: Path | None = None, *, source: str = "framework") -> dict | None:
     """Read the full content of a memory file by relative path.
+
+    *source* selects the memory root:
+    - ``"framework"``: user-level ``~/.claude/SuperchargeAI/memory/``
+    - ``"project"``: project-level ``<project>/.claude/SuperchargeAI/memory/``
 
     Validates that the path stays within the memory directory to prevent
     directory traversal. Returns ``None`` if the file doesn't exist or
@@ -290,8 +310,11 @@ def _read_memory_content(rel_path: str, project_dir: Path | None = None) -> dict
 
         {"path": "...", "title": "...", "keywords": [...], "content": "..."}
     """
-    sa_root = _resolve_sa_root(project_dir)
-    memory_root = sa_root / "memory"
+    if source == "framework":
+        memory_root = _user_config_dir() / "SuperchargeAI" / "memory"
+    else:
+        sa_root = _resolve_sa_root(project_dir)
+        memory_root = sa_root / "memory"
 
     # Resolve and validate path stays within memory_root
     target = (memory_root / rel_path).resolve()

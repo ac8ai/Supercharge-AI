@@ -7,6 +7,7 @@ from pathlib import Path
 from supercharge.browse import (
     _build_browse_response,
     _build_memories_response,
+    _build_project_memories_response,
     _build_tasks_response,
     _read_memory_content,
     _read_task_summary,
@@ -338,37 +339,23 @@ class TestBuildBrowseResponse:
 
 
 class TestBuildMemoriesResponse:
-    """Test _build_memories_response with various memory directory layouts."""
+    """Test _build_memories_response (framework/user-level) and _build_project_memories_response."""
 
-    def _make_memory(self, root: Path, rel_path: str, content: str) -> None:
-        """Create a memory file at the given relative path under memory/."""
-        mem_root = root / ".claude" / "SuperchargeAI" / "memory"
-        full = mem_root / rel_path
+    def _make_user_memory(self, config_root: Path, rel_path: str, content: str) -> None:
+        """Create a memory file under the user-level config dir."""
+        full = config_root / "SuperchargeAI" / "memory" / rel_path
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content)
 
-    def test_realistic_memory_dir(self, tmp_path: Path):
-        self._make_memory(tmp_path, "project/db-gotchas.md", (
-            "---\n"
-            "title: Database gotchas\n"
-            "keywords: [postgres, migrations]\n"
-            "created: 2026-01-01\n"
-            "updated: 2026-02-15\n"
-            "---\n\n"
-            "# Content\n\n"
-            "Always run migrations in a transaction.\n"
-        ))
-        self._make_memory(tmp_path, "project/api-patterns.md", (
-            "---\n"
-            "title: API patterns\n"
-            "keywords: [rest, validation]\n"
-            "created: 2026-01-10\n"
-            "updated: 2026-01-10\n"
-            "---\n\n"
-            "# Content\n\n"
-            "Use Pydantic for request validation.\n"
-        ))
-        self._make_memory(tmp_path, "methodology/behavior/no-force-push.md", (
+    def _make_project_memory(self, root: Path, rel_path: str, content: str) -> None:
+        """Create a memory file under the project-level memory dir."""
+        full = root / ".claude" / "SuperchargeAI" / "memory" / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content)
+
+    def test_framework_memories_from_user_config(self, tmp_path: Path, monkeypatch):
+        """_build_memories_response reads from user-level config dir."""
+        self._make_user_memory(tmp_path, "methodology/behavior/no-force-push.md", (
             "---\n"
             "title: No force push\n"
             "keywords: [git, safety]\n"
@@ -378,48 +365,84 @@ class TestBuildMemoriesResponse:
             "# Content\n\n"
             "Never force push to main.\n"
         ))
+        monkeypatch.setattr("supercharge.browse._user_config_dir", lambda: tmp_path)
 
-        resp = _build_memories_response(project_dir=tmp_path)
+        resp = _build_memories_response()
+        cats = resp["categories"]
+        assert "methodology" in cats
+        assert len(cats["methodology"]) == 1
+        assert cats["methodology"][0]["title"] == "No force push"
+
+    def test_project_memories_response(self, tmp_path: Path):
+        """_build_project_memories_response reads project-level memories."""
+        self._make_project_memory(tmp_path, "project/db-gotchas.md", (
+            "---\n"
+            "title: Database gotchas\n"
+            "keywords: [postgres, migrations]\n"
+            "created: 2026-01-01\n"
+            "updated: 2026-02-15\n"
+            "---\n\n"
+            "# Content\n\n"
+            "Always run migrations in a transaction.\n"
+        ))
+        self._make_project_memory(tmp_path, "project/api-patterns.md", (
+            "---\n"
+            "title: API patterns\n"
+            "keywords: [rest, validation]\n"
+            "created: 2026-01-10\n"
+            "updated: 2026-01-10\n"
+            "---\n\n"
+            "# Content\n\n"
+            "Use Pydantic for request validation.\n"
+        ))
+
+        resp = _build_project_memories_response(project_dir=tmp_path)
         cats = resp["categories"]
         assert "project" in cats
-        assert "methodology" in cats
         assert len(cats["project"]) == 2
-        assert len(cats["methodology"]) == 1
-
-        # Verify entry fields
         entry = cats["project"][0]  # api-patterns.md (sorted)
         assert entry["title"] == "API patterns"
         assert entry["keywords"] == ["rest", "validation"]
         assert entry["created"] == "2026-01-10"
-        assert "path" in entry
-        assert "preview" in entry
 
-    def test_empty_memory_dir(self, tmp_path: Path):
-        mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
+    def test_project_memories_excludes_non_project(self, tmp_path: Path):
+        """_build_project_memories_response only returns 'project' category."""
+        self._make_project_memory(tmp_path, "project/foo.md", "---\ntitle: Foo\n---\n")
+        self._make_project_memory(tmp_path, "stamps/bar.md", "---\ntitle: Bar\n---\n")
+
+        resp = _build_project_memories_response(project_dir=tmp_path)
+        assert "project" in resp["categories"]
+        assert "stamps" not in resp["categories"]
+
+    def test_empty_memory_dir(self, tmp_path: Path, monkeypatch):
+        mem = tmp_path / "SuperchargeAI" / "memory"
         mem.mkdir(parents=True)
+        monkeypatch.setattr("supercharge.browse._user_config_dir", lambda: tmp_path)
 
-        resp = _build_memories_response(project_dir=tmp_path)
+        resp = _build_memories_response()
         assert resp["categories"] == {}
 
-    def test_no_memory_dir(self, tmp_path: Path):
-        resp = _build_memories_response(project_dir=tmp_path)
+    def test_no_memory_dir(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("supercharge.browse._user_config_dir", lambda: tmp_path)
+        resp = _build_memories_response()
         assert resp["categories"] == {}
 
     def test_malformed_frontmatter(self, tmp_path: Path):
-        self._make_memory(tmp_path, "project/broken.md",
-                          "No frontmatter here, just content.\n")
+        self._make_project_memory(tmp_path, "project/broken.md",
+                                  "No frontmatter here, just content.\n")
 
-        resp = _build_memories_response(project_dir=tmp_path)
+        resp = _build_project_memories_response(project_dir=tmp_path)
         cats = resp["categories"]
         assert "project" in cats
         entry = cats["project"][0]
-        # Falls back to stem for title
         assert entry["title"] == "broken"
         assert entry["keywords"] == []
 
-    def test_category_grouping_top_level(self, tmp_path: Path):
+    def test_category_grouping_top_level(self, tmp_path: Path, monkeypatch):
         """Top-level files (not in a subdirectory) go into 'root' category."""
-        self._make_memory(tmp_path, "index.md", (
+        full = tmp_path / "SuperchargeAI" / "memory" / "index.md"
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(
             "---\n"
             "title: Memory Index\n"
             "keywords: [index]\n"
@@ -427,9 +450,10 @@ class TestBuildMemoriesResponse:
             "updated: 2026-01-01\n"
             "---\n\n"
             "Top-level memory file.\n"
-        ))
+        )
+        monkeypatch.setattr("supercharge.browse._user_config_dir", lambda: tmp_path)
 
-        resp = _build_memories_response(project_dir=tmp_path)
+        resp = _build_memories_response()
         assert "root" in resp["categories"]
         assert resp["categories"]["root"][0]["title"] == "Memory Index"
 
@@ -531,7 +555,7 @@ class TestReadMemoryContent:
             "Use dependency injection.\n"
         ))
 
-        result = _read_memory_content("project/patterns.md", project_dir=tmp_path)
+        result = _read_memory_content("project/patterns.md", project_dir=tmp_path, source="project")
         assert result is not None
         assert result["path"] == "project/patterns.md"
         assert result["title"] == "Patterns"
@@ -543,14 +567,14 @@ class TestReadMemoryContent:
         mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
         mem.mkdir(parents=True)
 
-        result = _read_memory_content("project/missing.md", project_dir=tmp_path)
+        result = _read_memory_content("project/missing.md", project_dir=tmp_path, source="project")
         assert result is None
 
     def test_file_without_frontmatter(self, tmp_path: Path):
         self._make_memory(tmp_path, "project/plain.md",
                           "Just plain content, no frontmatter.\n")
 
-        result = _read_memory_content("project/plain.md", project_dir=tmp_path)
+        result = _read_memory_content("project/plain.md", project_dir=tmp_path, source="project")
         assert result is not None
         assert result["title"] == "plain"  # falls back to stem
         assert result["keywords"] == []
@@ -562,12 +586,12 @@ class TestReadMemoryContent:
         mem.mkdir(parents=True)
 
         # Try to escape via ../
-        result = _read_memory_content("../../etc/passwd", project_dir=tmp_path)
+        result = _read_memory_content("../../etc/passwd", project_dir=tmp_path, source="project")
         assert result is None
 
     def test_path_traversal_with_embedded_dotdot(self, tmp_path: Path):
         mem = tmp_path / ".claude" / "SuperchargeAI" / "memory"
         mem.mkdir(parents=True)
 
-        result = _read_memory_content("project/../../../etc/passwd", project_dir=tmp_path)
+        result = _read_memory_content("project/../../../etc/passwd", project_dir=tmp_path, source="project")
         assert result is None
