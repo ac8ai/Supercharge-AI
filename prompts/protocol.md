@@ -164,13 +164,16 @@ memory/
 ├── project/          # Project-specific gotchas and patterns (read by all agents)
 └── methodology/
     ├── behavior/     # Learnings about agent behavior issues
-    └── flows/        # Learnings about workflow gaps
+    ├── flows/        # Learnings about workflow gaps
+    └── skills/       # Skill proposals for contribution
 ```
 
 **Two types with different audiences:**
 
 - `project/` — Project-specific gotchas and patterns. Read by all agents to avoid repeating mistakes in this codebase.
 - `methodology/` — Learnings about SuperchargeAI's own shortcomings: agent misbehavior, missing guardrails, workflow gaps. Read only by the memory agent. These are an improvement backlog — each one represents a prompt, tool, or code fix that should be made to SuperchargeAI itself. Other agents do NOT consult methodology memory.
+
+**Skill proposals:** When the memory agent detects a recurring multi-step pattern or a pattern that only worked after multiple failures, it writes a skill proposal memory file with `type: skill-proposal` in frontmatter. Project-scope proposals go in `project/`. Methodology-scope proposals go in `methodology/skills/` with `contribution_candidate: true` for the contribution pipeline. See the memory file template for the skill proposal format.
 
 Memory files MUST include YAML frontmatter:
 ```yaml
@@ -214,10 +217,6 @@ Choose the model based on task complexity:
 
 Workers can spawn sub-workers if the recursion budget allows (tracked via `SUPERCHARGE_RECURSION_REMAINING` env var, default 5 levels). Workers at budget 0 cannot spawn.
 </workers>
-
-<scripts>
-Multi-line scripts go in `.claude/SuperchargeAI/scripts/` with `lowercase_name.ext` naming. Each script starts with a docstring explaining its purpose and usage context.
-</scripts>
 
 <tips>
 - The `supercharge` CLI is always available when this protocol is active.

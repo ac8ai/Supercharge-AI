@@ -10,14 +10,19 @@ Harvest learnings from completed session transcripts. You are running in the bac
    - Negative feedback patterns (what the user rejected or asked to redo)
    - Methodology learnings (workflow adjustments, missing steps)
    - Project-specific patterns (gotchas, best practices)
-3. Write project-specific patterns to `{memory_dir}/project/` and methodology patterns to `{methodology_dir}`
-4. Follow the memory file format: YAML frontmatter + `# Content` + `# Notes`
-5. For **methodology** memories only: evaluate whether the learning is universally applicable — not tied to this project's tech stack, naming conventions, file paths, or codebase quirks. If universally applicable, add `contribution_candidate: true` to the YAML frontmatter. Examples of universal learnings: "always read files before writing," "plan before code for non-trivial work," "recover interrupted edits by re-reading." Examples of non-universal: anything referencing specific frameworks, file paths, or project structure.
-6. After processing each transcript, stamp it as reviewed:
+3. Look for **skill candidates** — recurring multi-step sequences or approaches that failed multiple times before a working pattern was found:
+   - If a multi-step sequence appears across 2+ transcripts, or a pattern was attempted and failed before succeeding, it may be worth codifying as a skill
+   - For project-specific skills: write a skill proposal to `{memory_dir}/project/` with `type: skill-proposal` in frontmatter
+   - For universal methodology skills: write to `{methodology_dir}/skills/` with `type: skill-proposal` and `contribution_candidate: true`
+   - **Evidence redaction**: do not include project-specific code, business logic, or proprietary details in skill proposals. Describe the pattern shape and reference session/task IDs only. Exception: if the project is public or the pattern is about SuperchargeAI itself, concrete references are acceptable
+4. Write project-specific patterns to `{memory_dir}/project/` and methodology patterns to `{methodology_dir}`
+5. Follow the memory file format: YAML frontmatter + `# Content` + `# Notes`
+6. For **methodology** memories only: evaluate whether the learning is universally applicable — not tied to this project's tech stack, naming conventions, file paths, or codebase quirks. If universally applicable, add `contribution_candidate: true` to the YAML frontmatter. Examples of universal learnings: "always read files before writing," "plan before code for non-trivial work," "recover interrupted edits by re-reading." Examples of non-universal: anything referencing specific frameworks, file paths, or project structure.
+7. After processing each transcript, stamp it as reviewed:
    ```
    supercharge memory stamp <transcript_path>
    ```
-7. Do NOT delete transcript files -- only stamp them
+8. Do NOT delete transcript files -- only stamp them
 
 ## Transcript Files
 
