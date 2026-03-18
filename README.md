@@ -1,11 +1,12 @@
 # Supercharge-AI
 
-Supercharge-AI is a recursive Claude Code orchestrator that improves as it builds. It moves context to markdown, delegates it recursively to workers, allowing a more focused task execution and avoiding information loss during context compaction. Memory agent helps Supercharge to learn from its errors and improve itself over the time.
-
+Multi-agent framework for Claude Code. Moves context to markdown, delegates recursively to workers, and learns from its mistakes through persistent memory.
 
 Inspired by [Recursive Language Models (RLM)](https://arxiv.org/abs/2512.24601) and [Confucius Code Agent (CCA)](https://arxiv.org/abs/2512.10398) — recursive self-delegation from RLM, persistent note-taking and hierarchical orchestration from CCA.
 
 ## Installation
+
+### From marketplace (stable)
 
 ```bash
 claude plugin marketplace add ac8ai/Supercharge-AI
@@ -13,148 +14,34 @@ claude plugin install supercharge-ai
 supercharge init --add-permissions
 ```
 
-On first session start, the plugin auto-installs `uv` and the `supercharge` CLI if missing. Prompts are injected automatically via SessionStart and SubagentStart hooks.
+### From local clone (beta)
 
-`supercharge init` adds the SuperchargeAI `@path` include to your project's CLAUDE.md. The `--add-permissions` flag adds permission entries to `~/.claude/settings.json` so you don't get constant approval dialogs.
-
-Linux and macOS only for now.
-
-## Architecture
-
-**Three-layer system:**
-1. **Orchestrator** - Top-level Claude Code session with Task tool for native subagents
-2. **Agents** - Native `.claude/agents/*.md` for high-level coordination
-3. **Workers** - Claude Agent SDK (Python) for low-level execution
-
-Workers use Agent SDK instead of `claude -p` for:
-- Direct API calls (no subprocess overhead)
-- Session resumption across context resets
-- Custom tool configurations per agent type
-- Recursion depth tracking via environment variables
-
-## Commands
-
-### `supercharge init`
-
-Add SuperchargeAI `@path` include line to the project's CLAUDE.md. Idempotent — skips if already present. Use `--project-dir` to target a specific project.
-
-### `supercharge deinit`
-
-Remove the SuperchargeAI include line from CLAUDE.md.
-
-### `supercharge task init <agent_type>`
-
-Create a new task workspace. Prints the UUID.
-
-### `supercharge subtask init <agent_type> <prompt>`
-
-Spawn a new Agent SDK worker on a task. Returns JSON `{worker_id, result}`.
-
-Options:
-- `--task-uuid UUID` — parent task UUID (agents pass this; workers get it from `SUPERCHARGE_TASK_UUID` env var automatically)
-- `--model MODEL` — model override (sonnet, opus, haiku)
-
-### `supercharge subtask resume <worker_id> <prompt>`
-
-Resume a worker that stopped with Questions. Looks up session from worker file.
-
-## Recursion Depth
-
-Workers can spawn sub-workers recursively (RLM-style). A countdown
-mechanism prevents infinite recursion.
-
-### How it works
-
-Two environment variables control depth:
-
-| Variable | Set by | Purpose |
-|----------|--------|---------|
-| `SUPERCHARGE_MAX_RECURSION_DEPTH` | User (settings.json) | Initial budget for the first `subtask init` call |
-| `SUPERCHARGE_RECURSION_REMAINING` | CLI (internal) | Countdown passed to each child worker |
-
-**Heuristic in `subtask init`:**
-
-1. `SUPERCHARGE_RECURSION_REMAINING` is set → we're inside a worker → use it
-2. Not set → we're at the first call (orchestrator/agent level):
-   - `SUPERCHARGE_MAX_RECURSION_DEPTH` is set → use it as initial budget
-   - Not set → default to **5**
-
-Each `subtask init` call decrements the remaining count by 1 and passes
-it to the child via `ClaudeAgentOptions(env=...)`. When remaining reaches
-0, the CLI refuses to spawn and returns an error.
-
-**Example chain (default 5):**
-
-```
-Agent calls subtask init          → remaining=5, child gets 4
-  Worker calls subtask init       → remaining=4, child gets 3
-    Sub-worker calls subtask init → remaining=3, child gets 2
-      ...
-        Worker at remaining=0     → CLI refuses: "Max recursion depth reached"
+```bash
+git clone https://github.com/ac8ai/Supercharge-AI.git
+cd Supercharge-AI && git checkout beta
+supercharge init --add-permissions
 ```
 
-The worker's initial prompt includes its recursion budget so it knows
-whether it can delegate.
+Local installs auto-pull the latest beta and install editable on each session start — no manual updating needed.
 
-### Configuration
+### What happens
 
-Set `SUPERCHARGE_MAX_RECURSION_DEPTH` in your project's Claude Code
-settings to override the default:
+On first session start, the plugin auto-installs `uv` and the `supercharge` CLI if missing. Prompts are injected automatically via hooks. `supercharge init` adds the SuperchargeAI include to your project's CLAUDE.md. The `--add-permissions` flag adds permission entries so you don't get constant approval dialogs.
 
-**`.claude/settings.json`** (checked into repo, shared with team):
+Linux and macOS only.
 
-```json
-{
-  "env": {
-    "SUPERCHARGE_MAX_RECURSION_DEPTH": "3"
-  }
-}
-```
+## How it works
 
-**`.claude/settings.local.json`** (gitignored, personal override):
+Once installed, SuperchargeAI takes over Claude Code's delegation. Instead of doing everything in one context window, it:
 
-```json
-{
-  "env": {
-    "SUPERCHARGE_MAX_RECURSION_DEPTH": "8"
-  },
-  "permissions": {
-    "allow": ["..."]
-  }
-}
-```
+1. **Plans** — decomposes your request into scoped tasks
+2. **Delegates** — sends each task to a specialized agent (code, review, research, etc.)
+3. **Recurses** — agents can spawn workers, workers can spawn sub-workers (up to 5 levels deep)
+4. **Remembers** — harvests learnings into persistent memory after each task
 
-The `env` field in Claude Code settings sets environment variables for
-the entire session. These propagate through Bash commands and Agent SDK
-subprocesses automatically.
+Everything flows through markdown files in `.claude/SuperchargeAI/` — task briefs, notes, results, memory. Context windows are temporary; the markdown is permanent.
 
-**Precedence** (highest wins):
-
-1. `SUPERCHARGE_RECURSION_REMAINING` (already inside a worker)
-2. `SUPERCHARGE_MAX_RECURSION_DEPTH` (user-configured in settings.json)
-3. Default: 5
-
-### Fast Model Configuration
-
-`SUPERCHARGE_FAST_MODELS` controls which models use fast (fire-and-forget)
-mode. Comma-separated, case-insensitive. When set, replaces the default
-entirely.
-
-| Variable | Default | Example |
-|----------|---------|---------|
-| `SUPERCHARGE_FAST_MODELS` | `haiku` | `haiku,sonnet` |
-
-```json
-{
-  "env": {
-    "SUPERCHARGE_FAST_MODELS": "haiku"
-  }
-}
-```
-
-Set to empty string to disable fast mode for all models.
-
-## Agent Types
+### Agent types
 
 | Agent | Purpose |
 |-------|---------|
@@ -164,114 +51,46 @@ Set to empty string to disable fast mode for all models.
 | `research` | Search the web, gather external context |
 | `review` | Code review of completed work |
 | `consistency` | Check for contradictions, broken references, duplication |
-| `memory` | Maintain project and methodology memory |
+| `memory` | Maintain project and methodology memory from task results |
 
-## Worker Modes
-
-Model determines mode: opus/sonnet → deep (context file, resume,
-recursion), haiku → fast (fire-and-forget). See protocol.md for
-agent-facing details.
-
-## Worker Context File
-
-Deep workers get a context file at `workers/<worker_id>.md` with these
-sections:
-
-| Section | Purpose |
-|---------|---------|
-| Assignment | Pre-filled by CLI. Do not modify. |
-| Progress | Updated as worker works. |
-| Result | Final deliverable. Agent reads this. |
-| Files | Every file created or modified. |
-| Questions | Blocks progress. Agent answers and resumes. |
-| Errors | Problems encountered (not all require stopping). |
-| Memory | Optional. Patterns, gotchas, instruction gaps for the memory agent. |
-
-## Per-Agent Tool Permissions
-
-Workers get tool access scoped by agent type. Two mechanisms:
-
-1. **`allowed_tools`** — coarse filter: which tools a worker can see at all
-2. **`can_use_tool` callback** — fine-grained: path-based Write/Edit scoping
-   (deep workers only; fast workers don't support callbacks)
-
-### Tool allowlists
-
-| Agent | Deep worker tools | Fast worker tools |
-|-------|-------------------|-------------------|
-| `code` | Read, Write, Edit, Bash, Glob, Grep | Read, Glob, Grep |
-| `plan` | Read, Write, Glob, Grep | Read, Glob, Grep |
-| `review` | Read, Write, Bash, Glob, Grep | Read, Glob, Grep |
-| `document` | Read, Write, Edit, Glob, Grep | Read, Glob, Grep |
-| `research` | Read, Write, Glob, Grep, WebSearch, WebFetch | Read, Glob, Grep, WebSearch, WebFetch |
-| `consistency` | Read, Write, Glob, Grep | Read, Glob, Grep |
-| `memory` | Read, Write, Edit, Bash, Glob, Grep | Read, Glob, Grep |
-
-All deep workers get Write for their context file. The `can_use_tool`
-callback then scopes *where* they can write.
-
-### Write scopes (deep workers)
-
-| Scope | Agents | Write/Edit allowed |
-|-------|--------|--------------------|
-| `project` | code, document | Anywhere in project root |
-| `memory` | memory | Memory dir + context file |
-| `context` | plan, review, research, consistency | Context file only |
-
-### Architectural enforcement
-
-The `can_use_tool` callback also blocks `supercharge task init` in Bash
-for all workers — only the orchestrator creates task workspaces.
-
-## Permissions
-
-SuperchargeAI needs three tool calls auto-approved to function without constant permission dialogs:
-
-- `Bash(supercharge *)` — CLI commands for task/subtask management
-- `Write(.claude/SuperchargeAI/**)` — writing task.md, result.md, notes.md
-- `Edit(.claude/SuperchargeAI/**)` — editing task files (e.g., answering agent questions)
-
-Two independent mechanisms handle this:
-
-### Tier 1: PreToolUse Hook (automatic)
-
-The plugin's `hooks.json` includes a `PreToolUse` hook that auto-approves SuperchargeAI's own tool calls at runtime. No configuration needed — it activates when the plugin is enabled.
-
-| Tool | Condition | Decision |
-|------|-----------|----------|
-| Bash | Command starts with `supercharge ` | Allow |
-| Write/Edit | Path contains `/.claude/SuperchargeAI/` | Allow |
-| Task | `subagent_type` starts with `supercharge-ai:` and prompt contains workspace path | Allow |
-| Task | `subagent_type` starts with `supercharge-ai:` but no workspace path | **Deny** |
-| Anything else | — | Pass-through (normal permission flow) |
-
-The Task deny rule enforces that agents always receive a task workspace — preventing accidental invocations without context.
-
-**Known limitation:** Plugin hooks don't fire in VS Code (Claude Code bug [#18547](https://github.com/anthropics/claude-code/issues/18547)). Use Tier 2 as a workaround.
-
-### Tier 2: Settings Permissions (manual, works everywhere)
-
-For VS Code or as a fallback, add static permission entries to `~/.claude/settings.json`:
+## Key commands
 
 ```bash
-supercharge init --add-permissions
+supercharge init              # Set up SuperchargeAI in your project
+supercharge deinit            # Remove it
+supercharge dashboard         # Web UI for metrics and session traces
+supercharge version           # Check installed version
 ```
 
-This idempotently adds the three permission entries to your user-level settings. To remove them:
+Most other commands (`task init`, `subtask init`, `memory run`, etc.) are used by the agents themselves — you don't need to run them manually.
 
-```bash
-supercharge permissions remove
+## Configuration
+
+Override in `.claude/settings.json` or `.claude/settings.local.json`:
+
+```json
+{
+  "env": {
+    "SUPERCHARGE_MAX_RECURSION_DEPTH": "3",
+    "SUPERCHARGE_MAX_TURNS": "50"
+  }
+}
 ```
 
-Tier 2 cannot enforce the Task workspace validation that Tier 1 provides — static settings don't support conditional logic.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SUPERCHARGE_MAX_RECURSION_DEPTH` | `5` | How many levels deep workers can spawn sub-workers |
+| `SUPERCHARGE_MAX_TURNS` | (none) | Limit worker turns per invocation |
+| `SUPERCHARGE_FAST_MODELS` | `haiku` | Models that use fast (fire-and-forget) worker mode |
 
-## Developer Docs
+## Branching and releases
 
-See [docs/stack-propagation.md](docs/stack-propagation.md) for details on how env vars, context, and identifiers flow through the orchestrator → agent → worker → sub-worker stack.
+- `main` — stable releases, what marketplace users get
+- `beta` — pre-release testing via local clone
+- Feature branches merge into `beta`, then `beta` into `main`
 
-## TODO
+Version format follows PEP 440: `0.4.0` (stable), `0.4.0b1` (beta). See `.claude/CLAUDE.md` for details.
 
-- [ ] End-to-end integration test
-- [ ] Path usage metrics, permission denial logging, and dashboard
-- [ ] OpenCode support
-- [ ] Codex support
+## Developer docs
+
+- [docs/stack-propagation.md](docs/stack-propagation.md) — env var, context, and identifier flow through the orchestrator/agent/worker stack

@@ -23,7 +23,10 @@ if [ -f "${SUPERCHARGE_ROOT}/.claude-plugin/plugin.json" ]; then
     PLUGIN_VERSION=$(python3 -c "import json; print(json.load(open('${SUPERCHARGE_ROOT}/.claude-plugin/plugin.json')).get('version',''))" 2>/dev/null)
 fi
 
-# Install or upgrade supercharge CLI from PyPI (pinned to plugin version)
+# Install or upgrade supercharge CLI
+IS_LOCAL_GIT=false
+[ -d "${SUPERCHARGE_ROOT}/.git" ] && IS_LOCAL_GIT=true
+
 if [ -z "$PLUGIN_VERSION" ]; then
     # Cannot determine target version — skip install, delegate to CLI if present
     if ! command -v supercharge &> /dev/null; then
@@ -31,26 +34,35 @@ if [ -z "$PLUGIN_VERSION" ]; then
         exit 0
     fi
 elif ! command -v supercharge &> /dev/null; then
-    uv tool install "supercharge-ai==${PLUGIN_VERSION}" 2>/dev/null
+    if $IS_LOCAL_GIT; then
+        uv tool install -e "$SUPERCHARGE_ROOT" --force 2>/dev/null
+    else
+        uv tool install "supercharge-ai==${PLUGIN_VERSION}" 2>/dev/null
+    fi
 else
     INSTALLED_VERSION=$(supercharge version 2>/dev/null)
     if [ "$INSTALLED_VERSION" != "$PLUGIN_VERSION" ]; then
-        uv tool install "supercharge-ai==${PLUGIN_VERSION}" 2>/dev/null
+        if $IS_LOCAL_GIT; then
+            uv tool install -e "$SUPERCHARGE_ROOT" --force 2>/dev/null
+        else
+            uv tool install "supercharge-ai==${PLUGIN_VERSION}" 2>/dev/null
+        fi
 
         # Clean old plugin cache versions (Claude Code doesn't do this automatically)
-        PLUGIN_CACHE="$HOME/.claude/plugins/cache"
-        if [ -d "$PLUGIN_CACHE" ]; then
-            for marketplace_dir in "$PLUGIN_CACHE"/*/supercharge-ai/; do
-                [ -d "$marketplace_dir" ] || continue
-                for version_dir in "$marketplace_dir"*/; do
-                    [ -d "$version_dir" ] || continue
-                    # Keep the directory matching PLUGIN_VERSION, remove the rest
-                    dir_version=$(basename "$version_dir")
-                    if [ "$dir_version" != "$PLUGIN_VERSION" ]; then
-                        rm -rf "$version_dir"
-                    fi
+        if ! $IS_LOCAL_GIT; then
+            PLUGIN_CACHE="$HOME/.claude/plugins/cache"
+            if [ -d "$PLUGIN_CACHE" ]; then
+                for marketplace_dir in "$PLUGIN_CACHE"/*/supercharge-ai/; do
+                    [ -d "$marketplace_dir" ] || continue
+                    for version_dir in "$marketplace_dir"*/; do
+                        [ -d "$version_dir" ] || continue
+                        dir_version=$(basename "$version_dir")
+                        if [ "$dir_version" != "$PLUGIN_VERSION" ]; then
+                            rm -rf "$version_dir"
+                        fi
+                    done
                 done
-            done
+            fi
         fi
     fi
 fi
