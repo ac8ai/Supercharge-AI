@@ -46,7 +46,6 @@ packages = ["src/supercharge"]
 [tool.hatch.build.targets.wheel.force-include]
 "prompts" = "supercharge/data/prompts"
 "templates" = "supercharge/data/templates"
-"src/supercharge/data/dashboard" = "supercharge/data/dashboard"
 
 [tool.uv]
 # .venv location controlled by UV_PROJECT_ENVIRONMENT at runtime
