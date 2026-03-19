@@ -37,7 +37,7 @@ elif ! command -v supercharge &> /dev/null; then
     if $IS_LOCAL_GIT; then
         uv tool install -e "$SUPERCHARGE_ROOT" --force 2>/dev/null
     else
-        uv tool install "supercharge-ai==${PLUGIN_VERSION}" 2>/dev/null
+        uv tool install "supercharge-ai==${PLUGIN_VERSION}" --force 2>/dev/null
     fi
 else
     INSTALLED_VERSION=$(supercharge version 2>/dev/null)
@@ -45,7 +45,7 @@ else
         if $IS_LOCAL_GIT; then
             uv tool install -e "$SUPERCHARGE_ROOT" --force 2>/dev/null
         else
-            uv tool install "supercharge-ai==${PLUGIN_VERSION}" 2>/dev/null
+            uv tool install "supercharge-ai==${PLUGIN_VERSION}" --force 2>/dev/null
         fi
 
         # Clean old plugin cache versions (Claude Code doesn't do this automatically)
