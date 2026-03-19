@@ -586,6 +586,7 @@ class TestSpawnBackgroundMemoryEmit:
         mock_init_result.stderr = ""
 
         mock_popen = MagicMock()
+        mock_popen.wait.return_value = 0  # Return int so _wait_and_emit works
 
         with (
             patch("supercharge.memory.subprocess.run", return_value=mock_init_result),
@@ -597,8 +598,10 @@ class TestSpawnBackgroundMemoryEmit:
             result = _spawn_background_memory("# Task\nHarvest", str(tmp_path))
 
         assert result == task_uuid
-        assert len(calls) == 1
-        event_type, kwargs = calls[0]
+        # Filter for memory_spawn (background thread may also emit memory_end)
+        spawn_calls = [(et, kw) for et, kw in calls if et == "memory_spawn"]
+        assert len(spawn_calls) == 1
+        event_type, kwargs = spawn_calls[0]
         assert event_type == "memory_spawn"
         assert kwargs["task_uuid"] == task_uuid
 

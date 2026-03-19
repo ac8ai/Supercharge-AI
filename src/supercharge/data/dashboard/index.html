@@ -42,6 +42,7 @@
             <button class="unit-btn" data-sort="time" onclick="setDecompSort('time')">Time</button>
           </div>
         </div>
+        <span id="memory-status-indicator" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);display:none"></span>
         <span class="status"><span class="dot"></span>Auto-refresh 10s</span>
       </div>
       <div id="session-list" class="session-list">
@@ -243,32 +244,67 @@
     function aggregateTimeline(rawTimeline, granularity) {
       // rawTimeline: [{hour: "2026-03-15T09", count: N}, ...]
       // Returns [{key: "...", count: N}, ...] aggregated by granularity
+      // Fills gaps with count:0 so the timeline is continuous
       if (!rawTimeline || !rawTimeline.length) return [];
-      if (granularity === 'hour') {
-        return rawTimeline.map(function(t) { return {key: t.hour, count: t.count}; });
-      }
+
+      // First aggregate into buckets
       var buckets = {};
-      var order = [];
       rawTimeline.forEach(function(t) {
         var bucketKey;
-        if (granularity === 'day') {
-          bucketKey = t.hour.slice(0, 10); // "2026-03-15"
+        if (granularity === 'hour') {
+          bucketKey = t.hour;
+        } else if (granularity === 'day') {
+          bucketKey = t.hour.slice(0, 10);
         } else if (granularity === 'week') {
           var d = new Date(t.hour + ':00:00');
-          var day = d.getDay(); // 0=Sun
+          var day = d.getDay();
           var mon = new Date(d);
-          mon.setDate(mon.getDate() - ((day + 6) % 7)); // Monday
+          mon.setDate(mon.getDate() - ((day + 6) % 7));
           bucketKey = mon.toISOString().slice(0, 10);
         } else if (granularity === 'month') {
-          bucketKey = t.hour.slice(0, 7); // "2026-03"
+          bucketKey = t.hour.slice(0, 7);
         }
-        if (!buckets[bucketKey]) {
-          buckets[bucketKey] = 0;
-          order.push(bucketKey);
-        }
-        buckets[bucketKey] += t.count;
+        buckets[bucketKey] = (buckets[bucketKey] || 0) + t.count;
       });
-      return order.map(function(k) { return {key: k, count: buckets[k]}; });
+
+      // Generate continuous sequence from first to last bucket
+      var keys = Object.keys(buckets).sort();
+      if (keys.length <= 1) {
+        return keys.map(function(k) { return {key: k, count: buckets[k]}; });
+      }
+
+      var result = [];
+      var stepMs;
+      if (granularity === 'hour') stepMs = 3600000;
+      else if (granularity === 'day') stepMs = 86400000;
+      else if (granularity === 'week') stepMs = 7 * 86400000;
+      else stepMs = null; // month handled separately
+
+      if (granularity === 'month') {
+        // Step month by month
+        var cur = new Date(keys[0] + '-01T00:00:00');
+        var last = new Date(keys[keys.length - 1] + '-01T00:00:00');
+        while (cur <= last) {
+          var mk = cur.toISOString().slice(0, 7);
+          result.push({key: mk, count: buckets[mk] || 0});
+          cur.setMonth(cur.getMonth() + 1);
+        }
+      } else {
+        var parseKey = granularity === 'hour'
+          ? function(k) { return new Date(k + ':00:00'); }
+          : function(k) { return new Date(k + 'T00:00:00'); };
+        var fmtKey = granularity === 'hour'
+          ? function(d) { return d.toISOString().slice(0, 13); }
+          : function(d) { return d.toISOString().slice(0, 10); };
+        var cur = parseKey(keys[0]);
+        var last = parseKey(keys[keys.length - 1]);
+        while (cur <= last) {
+          var k = fmtKey(cur);
+          result.push({key: k, count: buckets[k] || 0});
+          cur = new Date(cur.getTime() + stepMs);
+        }
+      }
+      return result;
     }
 
     function autoGranularity(rawTimeline) {
@@ -480,13 +516,17 @@
 
         var displayName = s.name || truncId(s.session_id, 50);
 
-        // Token badges
+        // Token badges — use aggregated totals if available
         var tokenHtml = '';
-        if (s.input_tokens || s.output_tokens || s.cache_creation_tokens || s.cache_read_tokens) {
+        var badgeIn = s.agg_input_tokens || s.input_tokens || 0;
+        var badgeOut = s.agg_output_tokens || s.output_tokens || 0;
+        var badgeCacheC = s.agg_cache_creation_tokens || s.cache_creation_tokens || 0;
+        var badgeCacheR = s.agg_cache_read_tokens || s.cache_read_tokens || 0;
+        if (badgeIn || badgeOut || badgeCacheC || badgeCacheR) {
           tokenHtml = '<div class="token-badges">';
-          if (s.input_tokens) tokenHtml += '<span class="token-badge">In: <b>' + fmtTokens(s.input_tokens) + '</b></span>';
-          if (s.output_tokens) tokenHtml += '<span class="token-badge">Out: <b>' + fmtTokens(s.output_tokens) + '</b></span>';
-          var cacheTotal = (s.cache_creation_tokens || 0) + (s.cache_read_tokens || 0);
+          if (badgeIn) tokenHtml += '<span class="token-badge">In: <b>' + fmtTokens(badgeIn) + '</b></span>';
+          if (badgeOut) tokenHtml += '<span class="token-badge">Out: <b>' + fmtTokens(badgeOut) + '</b></span>';
+          var cacheTotal = badgeCacheC + badgeCacheR;
           if (cacheTotal) tokenHtml += '<span class="token-badge">Cache: <b>' + fmtTokens(cacheTotal) + '</b></span>';
           if (s.message_count) tokenHtml += '<span class="token-badge">Msgs: <b>' + s.message_count + '</b></span>';
           tokenHtml += '</div>';
@@ -1062,7 +1102,12 @@
 
       fetch('/api/sessions/' + encodeURIComponent(sid) + '/spans')
         .then(function(r) { return r.json(); })
-        .then(function(spans) { renderTrace(container, spans, sid, sessionData); })
+        .then(function(data) {
+          // Handle new {spans, segments} shape and legacy bare array
+          var spans = Array.isArray(data) ? data : (data.spans || []);
+          var segments = Array.isArray(data) ? [] : (data.segments || []);
+          renderTrace(container, spans, sid, sessionData, segments);
+        })
         .catch(function() {
           container.innerHTML = '<div class="empty-state">Failed to load trace data</div>';
         });
@@ -1074,9 +1119,13 @@
       var inner = container.closest('.session-body-inner');
       if (inner) inner.style.padding = '0';
       var parts = [];
-      if (sessionData.input_tokens) parts.push('In: ' + fmtTokens(sessionData.input_tokens));
-      if (sessionData.output_tokens) parts.push('Out: ' + fmtTokens(sessionData.output_tokens));
-      var cacheTotal = (sessionData.cache_creation_tokens || 0) + (sessionData.cache_read_tokens || 0);
+      var soIn = sessionData.agg_input_tokens || sessionData.input_tokens || 0;
+      var soOut = sessionData.agg_output_tokens || sessionData.output_tokens || 0;
+      var soCacheC = sessionData.agg_cache_creation_tokens || sessionData.cache_creation_tokens || 0;
+      var soCacheR = sessionData.agg_cache_read_tokens || sessionData.cache_read_tokens || 0;
+      if (soIn) parts.push('In: ' + fmtTokens(soIn));
+      if (soOut) parts.push('Out: ' + fmtTokens(soOut));
+      var cacheTotal = soCacheC + soCacheR;
       if (cacheTotal) parts.push('Cache: ' + fmtTokens(cacheTotal));
       if (sessionData.tool_call_count) parts.push(sessionData.tool_call_count + ' tools');
       if (sessionData.duration_seconds) parts.push(fmtDuration(sessionData.duration_seconds));
@@ -1085,7 +1134,7 @@
         + '</div>';
     }
 
-    function renderTrace(container, spans, sid, sessionData) {
+    function renderTrace(container, spans, sid, sessionData, segments) {
       if ((!spans || spans.length === 0) && !sessionData) {
         container.classList.add('compact');
         var inner = container.closest('.session-body-inner');
@@ -1101,7 +1150,9 @@
       }
 
       // Parse timestamps
+      var sessionSkills = null;
       var parsed = spans.map(function(s) {
+        if (s._session_skills) sessionSkills = s._session_skills;
         return {
           type: s.type,
           id: s.id,
@@ -1111,7 +1162,9 @@
           start: s.start ? new Date(s.start).getTime() : 0,
           end: s.end ? new Date(s.end).getTime() : null,
           isResume: s.is_resume,
-          toolCalls: s.tool_calls || 0
+          toolCalls: s.tool_calls || 0,
+          workerStats: s.worker_stats || null,
+          tokens: s.tokens || null
         };
       }).filter(function(s) { return s.start > 0; });
 
@@ -1329,33 +1382,96 @@
           .attr('y', rowHeight / 2)
           .style('fill', '#7950f2')
           .text('session');
-        rowsG.append('rect')
-          .attr('class', 'span-bar')
-          .attr('x', labelWidth + sessionBarStart)
-          .attr('y', 4)
-          .attr('width', sessionBarW)
-          .attr('height', rowHeight - 8)
-          .attr('fill', '#7950f2')
-          .attr('opacity', 0.4)
-          .attr('rx', 3).attr('ry', 3);
 
-        // Token stats on session bar (if available)
+        // Determine whether to draw segmented or single bar
+        var useSegments = segments && segments.length >= 2;
+        var sessionBars = []; // collect rect selections for tooltip binding
+
+        if (useSegments) {
+          // Draw one rect per segment with gaps between them
+          segments.forEach(function(seg, i) {
+            var segStartX = xScale(new Date(seg.start).getTime());
+            var segEndX = xScale(new Date(seg.end).getTime());
+            var segW = Math.max(4, segEndX - segStartX);
+            var bar = rowsG.append('rect')
+              .attr('class', 'span-bar')
+              .attr('data-session-seg', i)
+              .attr('id', 'session-seg-' + sid.substring(0, 8) + '-' + i)
+              .attr('x', labelWidth + segStartX)
+              .attr('y', 4)
+              .attr('width', segW)
+              .attr('height', rowHeight - 8)
+              .attr('fill', '#7950f2')
+              .attr('opacity', 0.4)
+              .attr('rx', 3).attr('ry', 3);
+            sessionBars.push({ bar: bar, x: segStartX, w: segW });
+          });
+        } else {
+          // Single bar (backward compatible)
+          var bar = rowsG.append('rect')
+            .attr('class', 'span-bar')
+            .attr('id', 'session-bar-' + sid.substring(0, 8))
+            .attr('x', labelWidth + sessionBarStart)
+            .attr('y', 4)
+            .attr('width', sessionBarW)
+            .attr('height', rowHeight - 8)
+            .attr('fill', '#7950f2')
+            .attr('opacity', 0.4)
+            .attr('rx', 3).attr('ry', 3);
+          sessionBars.push({ bar: bar, x: sessionBarStart, w: sessionBarW });
+        }
+
+        // Token stats on session bar — show aggregated totals (orchestrator + agents + workers)
         if (sessionData) {
           var parts = [];
-          if (sessionData.input_tokens) parts.push('In:' + fmtTokens(sessionData.input_tokens));
-          if (sessionData.output_tokens) parts.push('Out:' + fmtTokens(sessionData.output_tokens));
-          var cacheTotal = (sessionData.cache_creation_tokens || 0) + (sessionData.cache_read_tokens || 0);
+          // Use aggregated tokens if available, otherwise fall back to orchestrator-only
+          var dispIn = sessionData.agg_input_tokens || sessionData.input_tokens || 0;
+          var dispOut = sessionData.agg_output_tokens || sessionData.output_tokens || 0;
+          var dispCacheC = sessionData.agg_cache_creation_tokens || sessionData.cache_creation_tokens || 0;
+          var dispCacheR = sessionData.agg_cache_read_tokens || sessionData.cache_read_tokens || 0;
+          if (dispIn) parts.push('In:' + fmtTokens(dispIn));
+          if (dispOut) parts.push('Out:' + fmtTokens(dispOut));
+          var cacheTotal = dispCacheC + dispCacheR;
           if (cacheTotal) parts.push('Cache:' + fmtTokens(cacheTotal));
           if (sessionData.tool_call_count) parts.push(sessionData.tool_call_count + ' tools');
           if (parts.length > 0) {
+            // Place token text on the widest segment (or first if single bar)
+            var widestSeg = sessionBars.reduce(function(best, s) { return s.w > best.w ? s : best; }, sessionBars[0]);
             rowsG.append('text')
-              .attr('x', labelWidth + sessionBarStart + 6)
+              .attr('x', labelWidth + widestSeg.x + 6)
               .attr('y', rowHeight / 2)
               .attr('class', 'span-label')
               .style('fill', 'rgba(255,255,255,0.6)')
               .style('font-size', '10px')
               .text(parts.join('  '));
           }
+
+          // Session bar tooltip — bind to all segment rects
+          var tooltipLines = function() {
+            var tLines = ['Session (orchestrator)'];
+            if (sessionData.duration_seconds) tLines.push('Duration: ' + fmtDuration(sessionData.duration_seconds));
+            if (dispIn) tLines.push('Input tokens: ' + fmtTokens(dispIn));
+            if (dispOut) tLines.push('Output tokens: ' + fmtTokens(dispOut));
+            if (cacheTotal) tLines.push('Cache tokens: ' + fmtTokens(cacheTotal));
+            if (sessionData.tool_call_count) tLines.push('Tools: ' + sessionData.tool_call_count);
+            if (useSegments) tLines.push(segments.length + ' active periods');
+            if (sessionData.input_tokens && dispIn > sessionData.input_tokens) {
+              tLines.push('--- orchestrator only ---');
+              tLines.push('Input: ' + fmtTokens(sessionData.input_tokens) + ' / Output: ' + fmtTokens(sessionData.output_tokens));
+            }
+            tLines.push('ID: ' + sid);
+            return tLines;
+          };
+
+          sessionBars.forEach(function(s) {
+            s.bar.on('mouseover', function(event) {
+              tooltip.style('display', 'block').html(tooltipLines().join('\n'));
+            })
+            .on('mousemove', function(event) {
+              tooltip.style('left', (event.offsetX + 12) + 'px').style('top', (event.offsetY - 10) + 'px');
+            })
+            .on('mouseout', function() { tooltip.style('display', 'none'); });
+          });
         }
       }
 
@@ -1444,10 +1560,14 @@
             })(s);
             bar.style('cursor', 'pointer');
 
-            // Duration + tool count text
+            // Duration + tool count + token text
             // For completed spans, show duration. For running spans, show agent type + short ID.
             var durText = s.end ? fmtDuration((s.end - s.start) / 1000) : (s.agentType + ' ' + (s.id || '').slice(0, 6));
             var toolText = s.toolCalls > 0 ? ' \u00b7 ' + s.toolCalls + ' tools' : '';
+            var agentTokText = '';
+            if (s.tokens && (s.tokens.input_tokens || s.tokens.output_tokens)) {
+              agentTokText = ' \u00b7 ' + fmtTokens(s.tokens.input_tokens + s.tokens.output_tokens) + ' tok';
+            }
 
             // Check if there's a next bar on the same row (resume) — limit outside text
             var nextBarOnRow = agents.find(function(a) {
@@ -1465,7 +1585,7 @@
               .attr('height', rowHeight);
 
             if (s.end && barW > 40) {
-              var fullText = durText + toolText;
+              var fullText = durText + toolText + agentTokText;
               var estWidth = fullText.length * 7;
 
               if (estWidth <= barW - 12) {
@@ -1482,7 +1602,8 @@
                   .attr('y', y + rowHeight / 2 - 5)
                   .attr('clip-path', 'url(#' + clipId + ')')
                   .text(durText);
-                if (s.toolCalls > 0) {
+                var secondLine = (s.toolCalls > 0 ? s.toolCalls + ' tools' : '') + (agentTokText ? (s.toolCalls > 0 ? ' \u00b7 ' : '') + agentTokText.replace(' \u00b7 ', '') : '');
+                if (secondLine) {
                   rowsG.append('text')
                     .attr('class', 'span-label')
                     .attr('x', labelWidth + barX + 6)
@@ -1490,7 +1611,7 @@
                     .style('font-size', '9px')
                     .style('fill', 'rgba(255,255,255,0.6)')
                     .attr('clip-path', 'url(#' + clipId + ')')
-                    .text(s.toolCalls + ' tools');
+                    .text(secondLine);
                 }
               } else {
                 rowsG.append('text')
@@ -1500,7 +1621,8 @@
                   .style('font-size', '9px')
                   .attr('clip-path', 'url(#' + clipId + ')')
                   .text(durText);
-                if (s.toolCalls > 0) {
+                var secondLine2 = (s.toolCalls > 0 ? s.toolCalls + ' tools' : '') + (agentTokText ? (s.toolCalls > 0 ? ' \u00b7 ' : '') + agentTokText.replace(' \u00b7 ', '') : '');
+                if (secondLine2) {
                   rowsG.append('text')
                     .attr('class', 'span-label')
                     .attr('x', labelWidth + barX + 4)
@@ -1508,13 +1630,14 @@
                     .style('font-size', '8px')
                     .style('fill', 'rgba(255,255,255,0.5)')
                     .attr('clip-path', 'url(#' + clipId + ')')
-                    .text(s.toolCalls + ' tools');
+                    .text(secondLine2);
                 }
               }
             } else {
               // Bar too narrow for in-bar text — show outside (after bar end)
               var outsideText = durText;
-              if (gapToNext > 120) outsideText += toolText;
+              if (gapToNext > 160) outsideText += toolText + agentTokText;
+              else if (gapToNext > 120) outsideText += toolText;
               if (gapToNext > 40) {
                 // Clip outside text to available gap so it never overlaps next bar
                 var outsideClipId = 'oclip-' + sid.replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + (s.id || '').replace(/[^a-z0-9]/gi,'').slice(0,6) + '-' + s.row;
@@ -1580,6 +1703,16 @@
               return a.row === s.row && a.start > s.start;
             });
             if (wCount > 0 && isLastInRow) {
+              // Aggregate worker token stats for the indicator
+              var workerTotalTok = 0;
+              wList.forEach(function(w) {
+                if (w.workerStats) {
+                  workerTotalTok += (w.workerStats.input_tokens || 0) + (w.workerStats.output_tokens || 0);
+                }
+              });
+              var indicatorLabel = wCount + ' worker' + (wCount > 1 ? 's' : '');
+              if (workerTotalTok > 0) indicatorLabel += ' \u00b7 ' + fmtTokens(workerTotalTok) + ' tok';
+
               var durationTextW = (s.end && barW <= 60) ? 80 : 0;
               var indicatorX = labelWidth + barX + barW + 4 + durationTextW + 8;
               var indicator = rowsG.append('text')
@@ -1590,24 +1723,28 @@
                 .attr('font-family', 'var(--mono)')
                 .attr('dominant-baseline', 'central')
                 .style('cursor', 'pointer')
-                .text('[' + wCount + ' worker' + (wCount > 1 ? 's' : '') + ']');
+                .text('[' + indicatorLabel + ']');
               (function(agentId) {
                 indicator.on('click', function() { toggleWorkers(agentId); });
               })(s.id);
             }
 
-            // Tooltip — show full span details on hover
+            // Tooltip — uniform format for agent spans
             (function(span, wc) {
               bar.on('mouseover', function(event) {
                 var lines = [
                   span.agentType + (span.isResume ? ' (resumed)' : ''),
-                  'Start: ' + fmtTime(new Date(span.start).toISOString()),
                 ];
                 if (span.end) {
-                  lines.push('End: ' + fmtTime(new Date(span.end).toISOString()));
                   lines.push('Duration: ' + fmtDuration((span.end - span.start) / 1000));
                 } else {
                   lines.push('Status: running');
+                }
+                if (span.tokens) {
+                  lines.push('Input tokens: ' + fmtTokens(span.tokens.input_tokens));
+                  lines.push('Output tokens: ' + fmtTokens(span.tokens.output_tokens));
+                  var agentCache = (span.tokens.cache_creation || 0) + (span.tokens.cache_read || 0);
+                  if (agentCache) lines.push('Cache tokens: ' + fmtTokens(agentCache));
                 }
                 if (span.toolCalls > 0) lines.push('Tools: ' + span.toolCalls);
                 if (wc > 0) lines.push('Workers: ' + wc);
@@ -1769,14 +1906,52 @@
               .attr('opacity', 0.6)
               .attr('rx', 2);
 
-            if (w.end) {
+            // Duration + token info text after bar
+            var workerMeta = [];
+            if (w.end) workerMeta.push(fmtDuration((w.end - w.start) / 1000));
+            if (w.workerStats) {
+              var ws = w.workerStats;
+              if (ws.input_tokens || ws.output_tokens) {
+                workerMeta.push(fmtTokens(ws.input_tokens + ws.output_tokens) + ' tok');
+              }
+            }
+            if (workerMeta.length > 0) {
               wg.append('text')
                 .attr('class', 'span-duration')
                 .attr('x', labelWidth + barX + barW + 4)
                 .attr('y', y + rowHeight / 2)
                 .attr('font-size', '10px')
-                .text(fmtDuration((w.end - w.start) / 1000));
+                .text(workerMeta.join(' \u00b7 '));
             }
+
+            // Tooltip on worker bar hover
+            (function(worker) {
+              var wBar = wg.selectAll('rect').filter(function() {
+                return +d3.select(this).attr('y') === y + 6;
+              });
+              wBar.on('mouseover', function(event) {
+                var tLines = [worker.agentType || 'worker'];
+                if (worker.end) tLines.push('Duration: ' + fmtDuration((worker.end - worker.start) / 1000));
+                if (worker.workerStats) {
+                  var wst = worker.workerStats;
+                  if (wst.input_tokens) tLines.push('Input tokens: ' + fmtTokens(wst.input_tokens));
+                  if (wst.output_tokens) tLines.push('Output tokens: ' + fmtTokens(wst.output_tokens));
+                  var wCache = (wst.cache_creation_tokens || 0) + (wst.cache_read_tokens || 0);
+                  if (wCache) tLines.push('Cache tokens: ' + fmtTokens(wCache));
+                  if (worker.toolCalls > 0) tLines.push('Tools: ' + worker.toolCalls);
+                  if (wst.num_turns) tLines.push('Turns: ' + wst.num_turns);
+                  if (wst.is_error) tLines.push('Status: ERROR');
+                } else {
+                  if (worker.toolCalls > 0) tLines.push('Tools: ' + worker.toolCalls);
+                }
+                tLines.push('ID: ' + worker.id);
+                tooltip.style('display', 'block').html(tLines.join('\n'));
+              })
+              .on('mousemove', function(event) {
+                tooltip.style('left', (event.offsetX + 12) + 'px').style('top', (event.offsetY - 10) + 'px');
+              })
+              .on('mouseout', function() { tooltip.style('display', 'none'); });
+            })(w);
 
             // Arrow from parent to worker
             var parentY = parentRow * rowHeight + rowHeight - 4;
@@ -1795,6 +1970,18 @@
       drawSessionBar();
       drawArrows();
       drawAgentBars();
+
+      // --- Skills display ---
+      if (sessionSkills && Object.keys(sessionSkills).length > 0) {
+        var skillParts = [];
+        Object.keys(sessionSkills).forEach(function(name) {
+          skillParts.push(esc(name) + ' \u00d7' + sessionSkills[name]);
+        });
+        var skillDiv = document.createElement('div');
+        skillDiv.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:8px;padding:4px 0';
+        skillDiv.innerHTML = '<span style="color:var(--text);font-weight:600">Skills:</span> ' + skillParts.join(', ');
+        container.appendChild(skillDiv);
+      }
     }
 
     function formatTraceTime(ms, baseMs) {
@@ -2452,10 +2639,11 @@
     // -- Projects sub-tab --
     var browseProjectDrill = null; // {slug, name, path} when drilled into a project
 
-    async function loadProjectTasks() {
+    async function loadProjectTasks(skipSync) {
       var el = document.getElementById('browse-projects');
       // Sync from Sessions tab: use currentProject or first expanded project
-      if (!browseProjectDrill) {
+      // skipSync=true when user explicitly clicked "back" to project list
+      if (!browseProjectDrill && !skipSync) {
         var syncSlug = null;
         if (currentProject) {
           syncSlug = currentProject.slug;
@@ -2521,7 +2709,7 @@
     function browseProjectBack() {
       browseProjectDrill = null;
       currentProject = null;
-      loadProjectTasks();
+      loadProjectTasks(true);
     }
 
     async function loadProjectDetail(proj, el) {
@@ -2925,7 +3113,8 @@
         }
         if (!decompSpansCache[sessionId]) {
           var spResp = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/spans');
-          decompSpansCache[sessionId] = await spResp.json();
+          var spData = await spResp.json();
+          decompSpansCache[sessionId] = Array.isArray(spData) ? spData : (spData.spans || []);
         }
 
         var tokenData = decompTokenCache[sessionId] || {};
@@ -3138,7 +3327,7 @@
           promises.push(
             fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/spans')
               .then(function(r) { return r.json(); })
-              .then(function(d) { decompSpansCache[sessionId] = d; })
+              .then(function(d) { decompSpansCache[sessionId] = Array.isArray(d) ? d : (d.spans || []); })
           );
         }
         if (promises.length) await Promise.all(promises);
@@ -3714,11 +3903,15 @@
       }).join('<span class="flow-arrow">&rsaquo;</span>');
       var displayName = s.name || truncId(s.session_id, 50);
       var tokenHtml = '';
-      if (s.input_tokens || s.output_tokens || s.cache_creation_tokens || s.cache_read_tokens) {
+      var bsIn = s.agg_input_tokens || s.input_tokens || 0;
+      var bsOut = s.agg_output_tokens || s.output_tokens || 0;
+      var bsCacheC = s.agg_cache_creation_tokens || s.cache_creation_tokens || 0;
+      var bsCacheR = s.agg_cache_read_tokens || s.cache_read_tokens || 0;
+      if (bsIn || bsOut || bsCacheC || bsCacheR) {
         tokenHtml = '<div class="token-badges">';
-        if (s.input_tokens) tokenHtml += '<span class="token-badge">In: <b>' + fmtTokens(s.input_tokens) + '</b></span>';
-        if (s.output_tokens) tokenHtml += '<span class="token-badge">Out: <b>' + fmtTokens(s.output_tokens) + '</b></span>';
-        var cacheTotal = (s.cache_creation_tokens || 0) + (s.cache_read_tokens || 0);
+        if (bsIn) tokenHtml += '<span class="token-badge">In: <b>' + fmtTokens(bsIn) + '</b></span>';
+        if (bsOut) tokenHtml += '<span class="token-badge">Out: <b>' + fmtTokens(bsOut) + '</b></span>';
+        var cacheTotal = bsCacheC + bsCacheR;
         if (cacheTotal) tokenHtml += '<span class="token-badge">Cache: <b>' + fmtTokens(cacheTotal) + '</b></span>';
         if (s.message_count) tokenHtml += '<span class="token-badge">Msgs: <b>' + s.message_count + '</b></span>';
         tokenHtml += '</div>';
@@ -3785,10 +3978,29 @@
       morphdomUpdate(el, html);
     }
 
+    // ===== Memory status indicator =====
+    function updateMemoryStatus() {
+      fetch('/api/memory/status')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var el = document.getElementById('memory-status-indicator');
+          if (!el || !data || data.length === 0) { if (el) el.style.display = 'none'; return; }
+          var latest = data[0];
+          var statusColor = latest.status === 'running' ? '#fcc419' : latest.status === 'failed' ? '#ff6b6b' : 'var(--code)';
+          var statusDot = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + statusColor + ';margin-right:4px;vertical-align:middle"></span>';
+          var text = 'Memory: ' + latest.status;
+          if (latest.duration_ms != null) text += ' (' + fmtDuration(latest.duration_ms / 1000) + ')';
+          el.innerHTML = statusDot + text;
+          el.style.display = 'inline';
+        })
+        .catch(function() {});
+    }
+
     // ===== Auto-refresh =====
     function startAutoRefresh() {
       loadSessions();
-      refreshTimer = setInterval(loadSessions, 10000);
+      updateMemoryStatus();
+      refreshTimer = setInterval(function() { loadSessions(); updateMemoryStatus(); }, 10000);
     }
 
     // ===== Init =====

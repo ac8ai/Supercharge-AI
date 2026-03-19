@@ -14,6 +14,7 @@ from supercharge.workers import (
     _build_options,
     _deep_worker_resume,
     _fast_worker_init,
+    _make_worker_tool_hook,
     _memory_agent_run,
 )
 
@@ -227,6 +228,116 @@ class TestMemoryAgentRun:
             await _memory_agent_run("some-uuid")
 
 
+# ── _memory_agent_run: worker result metrics emission ──────────────────────
+
+
+class TestMemoryAgentRunMetrics:
+    """Tests verifying that _memory_agent_run emits worker result stats via _emit_worker_result()."""
+
+    @pytest.mark.anyio
+    async def test_memory_agent_run_emits_worker_result_on_success(self, tmp_path: Path):
+        """_memory_agent_run calls _emit_worker_result() with the ResultMessage on success."""
+        task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir = tmp_path / "memory" / task_uuid
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.md").write_text("# Task\nHarvest memory.")
+
+        result_message = claude_agent_sdk.ResultMessage(
+            subtype="result",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test",
+            result="done",
+        )
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            yield result_message
+
+        with (
+            patch("supercharge.workers._find_task_dir", return_value=task_dir),
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+            patch("supercharge.workers._emit_worker_result") as mock_emit_worker_result,
+        ):
+            await _memory_agent_run(task_uuid)
+
+        mock_emit_worker_result.assert_called_once_with(
+            task_uuid, result_message, "memory", task_uuid
+        )
+
+    @pytest.mark.anyio
+    async def test_memory_agent_run_emits_worker_result_on_error(self, tmp_path: Path):
+        """_memory_agent_run calls _emit_worker_result() even when the result is an error."""
+        task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir = tmp_path / "memory" / task_uuid
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.md").write_text("# Task\nHarvest memory.")
+
+        result_message = claude_agent_sdk.ResultMessage(
+            subtype="result",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=True,
+            num_turns=1,
+            session_id="test",
+            result="error occurred",
+        )
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            yield result_message
+
+        with (
+            patch("supercharge.workers._find_task_dir", return_value=task_dir),
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+            patch("supercharge.workers._emit_worker_result") as mock_emit_worker_result,
+        ):
+            await _memory_agent_run(task_uuid)
+
+        mock_emit_worker_result.assert_called_once_with(
+            task_uuid, result_message, "memory", task_uuid
+        )
+
+    @pytest.mark.anyio
+    async def test_memory_agent_run_hooks_configured_for_memory(self, tmp_path: Path):
+        """_memory_agent_run passes PreToolUse hooks to query() for tool tracking."""
+        task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        task_dir = tmp_path / "memory" / task_uuid
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.md").write_text("# Task\nHarvest memory.")
+
+        captured_options = []
+
+        async def mock_query(*, prompt, options):  # noqa: ARG001
+            captured_options.append(options)
+            yield claude_agent_sdk.ResultMessage(
+                subtype="result",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="test",
+                result="done",
+            )
+
+        with (
+            patch("supercharge.workers._find_task_dir", return_value=task_dir),
+            patch.object(claude_agent_sdk, "query", mock_query),
+            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+        ):
+            await _memory_agent_run(task_uuid)
+
+        assert len(captured_options) == 1
+        options = captured_options[0]
+        assert options.hooks is not None
+        assert "PreToolUse" in options.hooks
+        assert len(options.hooks["PreToolUse"]) >= 1
+        hook_matcher = options.hooks["PreToolUse"][0]
+        assert len(hook_matcher.hooks) >= 1
+
+
 # ── _build_options: can_use_tool behavior ──────────────────────────────────
 
 
@@ -258,6 +369,139 @@ class TestBuildOptions:
                 worker_id=None,
             )
         assert options.can_use_tool is None
+
+
+# ── _build_options: PreToolUse hooks ────────────────────────────────────────
+
+
+class TestBuildOptionsHooks:
+    """Test _build_options registers PreToolUse hooks for tool tracking."""
+
+    def test_deep_worker_has_hooks(self, tmp_path: Path):
+        """Deep workers get PreToolUse hooks in returned options."""
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            options = _build_options(
+                tmp_path,
+                remaining_depth=2,
+                max_turns=None,
+                model=None,
+                agent_type="code",
+                worker_id="deep-worker-id",
+            )
+        assert options.hooks is not None
+        assert "PreToolUse" in options.hooks
+        assert len(options.hooks["PreToolUse"]) == 1
+        matcher = options.hooks["PreToolUse"][0]
+        assert matcher.matcher is None  # matches all tools
+        assert len(matcher.hooks) == 1
+
+    def test_fast_worker_has_hooks(self, tmp_path: Path):
+        """Fast workers (worker_id=None) also get PreToolUse hooks."""
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            options = _build_options(
+                tmp_path,
+                remaining_depth=1,
+                max_turns=None,
+                model=None,
+                agent_type="code",
+                worker_id=None,
+            )
+        assert options.hooks is not None
+        assert "PreToolUse" in options.hooks
+        assert len(options.hooks["PreToolUse"]) == 1
+
+
+# ── _make_worker_tool_hook: event emission ─────────────────────────────────
+
+
+class TestWorkerToolHook:
+    """Test the PreToolUse hook callback emits proper tool_use events."""
+
+    @pytest.mark.anyio
+    async def test_hook_emits_tool_use_event(self):
+        """The hook calls _emit with correct worker attribution."""
+        hook = _make_worker_tool_hook(
+            worker_id="w-123",
+            task_uuid="t-456",
+            agent_type="code",
+        )
+
+        hook_input = {
+            "session_id": "sess-789",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/some/file.py"},
+            "tool_use_id": "tu-001",
+            "cwd": "/tmp",
+            "hook_event_name": "PreToolUse",
+            "transcript_path": "/tmp/transcript.jsonl",
+        }
+
+        with patch("supercharge.workers._emit") as mock_emit:
+            result = await hook(hook_input, None, {})
+
+        assert result == {}
+        mock_emit.assert_called_once()
+        call_kwargs = mock_emit.call_args
+        assert call_kwargs[0][0] == "tool_use"
+        kw = call_kwargs[1]
+        assert kw["session_id"] == "sess-789"
+        assert kw["worker_id"] == "w-123"
+        assert kw["task_uuid"] == "t-456"
+        assert kw["agent_type"] == "code"
+        assert kw["tool_name"] == "Read"
+
+    @pytest.mark.anyio
+    async def test_hook_truncates_long_tool_input(self):
+        """String values in tool_input are truncated to 200 chars."""
+        hook = _make_worker_tool_hook(
+            worker_id="w-123",
+            task_uuid="t-456",
+            agent_type="code",
+        )
+
+        long_content = "x" * 500
+        hook_input = {
+            "session_id": "sess-1",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/f.py", "content": long_content},
+            "tool_use_id": "tu-002",
+            "cwd": "/tmp",
+            "hook_event_name": "PreToolUse",
+            "transcript_path": "/tmp/t.jsonl",
+        }
+
+        with patch("supercharge.workers._emit") as mock_emit:
+            await hook(hook_input, None, {})
+
+        import json
+
+        detail = json.loads(mock_emit.call_args[1]["detail"])
+        assert len(detail["content"]) == 200
+        assert detail["file_path"] == "/f.py"  # short strings unchanged
+
+    @pytest.mark.anyio
+    async def test_hook_returns_empty_dict(self):
+        """The hook returns {} (passthrough, no permission decision)."""
+        hook = _make_worker_tool_hook(
+            worker_id="w-1",
+            task_uuid="t-1",
+            agent_type="code",
+        )
+
+        hook_input = {
+            "session_id": "s",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_use_id": "tu-1",
+            "cwd": "/tmp",
+            "hook_event_name": "PreToolUse",
+            "transcript_path": "/tmp/t.jsonl",
+        }
+
+        with patch("supercharge.workers._emit"):
+            result = await hook(hook_input, None, {})
+
+        assert result == {}
 
 
 # ── _deep_worker_resume: async generator cleanup ──────────────────────────

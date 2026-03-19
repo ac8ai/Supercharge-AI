@@ -26,6 +26,8 @@ def _normalize_agent_type(raw: str) -> str:
     return raw
 
 
+_INACTIVITY_GAP_MINUTES = 30
+
 _COLUMNS = (
     'session_id',
     'agent_id',
@@ -164,6 +166,55 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
         conn.commit()
 
+    if current < 5:
+        # Migration 5: Create worker_result_stats table for SDK ResultMessage data
+        conn.executescript(
+            """\
+            CREATE TABLE IF NOT EXISTS worker_result_stats (
+                worker_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL DEFAULT '',
+                agent_type TEXT NOT NULL DEFAULT '',
+                task_uuid TEXT NOT NULL DEFAULT '',
+                duration_ms INTEGER DEFAULT 0,
+                duration_api_ms INTEGER DEFAULT 0,
+                num_turns INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                is_error BOOLEAN DEFAULT 0,
+                timestamp TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_worker_stats_session ON worker_result_stats(session_id);
+            CREATE INDEX IF NOT EXISTS idx_worker_stats_task ON worker_result_stats(task_uuid);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5)")
+        conn.commit()
+
+    if current < 6:
+        # Migration 6: Add skill_usage column to session_stats
+        try:
+            conn.execute(
+                "ALTER TABLE session_stats ADD COLUMN skill_usage TEXT DEFAULT '{}'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6)")
+        conn.commit()
+
+    if current < 7:
+        # Migration 7: Add segments column to session_stats for session splitting
+        try:
+            conn.execute(
+                "ALTER TABLE session_stats ADD COLUMN segments TEXT NOT NULL DEFAULT '[]'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7)")
+        conn.commit()
+
 
 def _emit(event_type: str, **kwargs: str) -> None:
     """Fire-and-forget event emitter. Never raises."""
@@ -212,6 +263,61 @@ def _emit(event_type: str, **kwargs: str) -> None:
         conn.commit()
     except Exception as e:
         print(f"supercharge: _emit failed: {type(e).__name__}: {e}", file=sys.stderr)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _emit_worker_result(
+    worker_id: str,
+    result_msg: object,
+    agent_type: str,
+    task_uuid: str,
+) -> None:
+    """Record ResultMessage stats from a worker run. Never raises."""
+    conn: sqlite3.Connection | None = None
+    try:
+        db = _db_path()
+        db.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(str(db))
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=5000')
+        _init_db(conn)
+
+        usage = getattr(result_msg, 'usage', None) or {}
+        ts = datetime.now(timezone.utc).isoformat()
+
+        conn.execute(
+            'INSERT OR REPLACE INTO worker_result_stats '
+            '(worker_id, session_id, agent_type, task_uuid, '
+            'duration_ms, duration_api_ms, num_turns, cost_usd, '
+            'input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, '
+            'is_error, timestamp) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                worker_id,
+                getattr(result_msg, 'session_id', '') or '',
+                agent_type,
+                task_uuid,
+                getattr(result_msg, 'duration_ms', 0) or 0,
+                getattr(result_msg, 'duration_api_ms', 0) or 0,
+                getattr(result_msg, 'num_turns', 0) or 0,
+                getattr(result_msg, 'total_cost_usd', 0.0) or 0.0,
+                usage.get('input_tokens', 0) or 0,
+                usage.get('output_tokens', 0) or 0,
+                usage.get('cache_creation_tokens', 0) or 0,
+                usage.get('cache_read_tokens', 0) or 0,
+                1 if getattr(result_msg, 'is_error', False) else 0,
+                ts,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        print(f'supercharge: _emit_worker_result failed: {type(e).__name__}: {e}', file=sys.stderr)
     finally:
         if conn is not None:
             try:
@@ -1115,6 +1221,8 @@ def _parse_session_jsonl(session_id: str, start_line: int = 0) -> dict:
         "total_cache_read_tokens": 0,
         "message_count": 0,
         "last_parsed_line": start_line,
+        "skills": {},
+        "message_timestamps": [],
     }
 
     jsonl_path = _find_session_jsonl(session_id)
@@ -1126,17 +1234,29 @@ def _parse_session_jsonl(session_id: str, start_line: int = 0) -> dict:
         with jsonl_path.open() as f:
             for line_num, line in enumerate(f):
                 total_lines = line_num + 1
-                if line_num < start_line:
-                    continue
                 line = line.strip()
                 if not line:
+                    if line_num < start_line:
+                        continue
                     continue
                 try:
                     entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
+                    if line_num < start_line:
+                        continue
                     continue
 
                 entry_type = entry.get("type", "")
+
+                # Collect timestamps from user/assistant messages
+                # (always, even for lines before start_line)
+                if entry_type in ("user", "assistant"):
+                    ts = entry.get("timestamp")
+                    if ts:
+                        result["message_timestamps"].append((ts, entry_type))
+
+                if line_num < start_line:
+                    continue
 
                 if entry_type == "custom-title":
                     title = entry.get("customTitle", "")
@@ -1164,23 +1284,128 @@ def _parse_session_jsonl(session_id: str, start_line: int = 0) -> dict:
 
                 elif entry_type == "assistant":
                     message = entry.get("message", {})
-                    usage = message.get("usage") if isinstance(message, dict) else None
-                    if usage and isinstance(usage, dict):
-                        result["total_input_tokens"] += usage.get("input_tokens", 0)
-                        result["total_output_tokens"] += usage.get("output_tokens", 0)
-                        result["total_cache_creation_tokens"] += usage.get(
-                            "cache_creation_input_tokens", 0
-                        )
-                        result["total_cache_read_tokens"] += usage.get(
-                            "cache_read_input_tokens", 0
-                        )
-                        result["message_count"] += 1
+                    if isinstance(message, dict):
+                        usage = message.get("usage")
+                        if usage and isinstance(usage, dict):
+                            result["total_input_tokens"] += usage.get("input_tokens", 0)
+                            result["total_output_tokens"] += usage.get("output_tokens", 0)
+                            result["total_cache_creation_tokens"] += usage.get(
+                                "cache_creation_input_tokens", 0
+                            )
+                            result["total_cache_read_tokens"] += usage.get(
+                                "cache_read_input_tokens", 0
+                            )
+                            result["message_count"] += 1
+
+                        # Detect skill usage in content blocks
+                        content = message.get("content", [])
+                        if isinstance(content, list):
+                            for block in content:
+                                if (
+                                    isinstance(block, dict)
+                                    and block.get("type") == "tool_use"
+                                    and block.get("name") == "Skill"
+                                ):
+                                    inp = block.get("input", {})
+                                    cmd = inp.get("command", "") if isinstance(inp, dict) else ""
+                                    if cmd:
+                                        skill_name = cmd.split()[0]
+                                        result["skills"][skill_name] = result["skills"].get(skill_name, 0) + 1
 
         result["last_parsed_line"] = total_lines
     except Exception:
         pass
 
     return result
+
+
+def _compute_segments(
+    message_timestamps: list[tuple[str, str]],
+    session_id: str,
+    conn: sqlite3.Connection,
+    gap_minutes: int = _INACTIVITY_GAP_MINUTES,
+) -> list[dict]:
+    """Compute session segments by detecting inactivity gaps.
+
+    Walks the sorted list of ``(timestamp, type)`` tuples and splits when:
+    1. A gap between the last assistant reply and the next user message exceeds
+       *gap_minutes*, AND
+    2. No agent or worker is active during that gap (checked via subagent_start /
+       subagent_stop events).
+
+    Returns a list of ``{"start": iso_ts, "end": iso_ts}`` dicts.
+    """
+    if not message_timestamps:
+        return []
+
+    sorted_ts = sorted(message_timestamps, key=lambda t: t[0])
+
+    if len(sorted_ts) < 2:
+        ts = sorted_ts[0][0]
+        return [{"start": ts, "end": ts}]
+
+    # Build active agent/worker time windows from events
+    active_windows: list[tuple[str, str]] = []
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, event_type, agent_id, worker_id "
+            "FROM events "
+            "WHERE session_id = ? AND event_type IN "
+            "('subagent_start','subagent_stop','worker_start','worker_end') "
+            "ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+
+        open_starts: dict[str, str] = {}
+        for row in rows:
+            etype = row["event_type"] if isinstance(row, sqlite3.Row) else row[1]
+            ts = row["timestamp"] if isinstance(row, sqlite3.Row) else row[0]
+            if isinstance(row, sqlite3.Row):
+                key = row["agent_id"] or row["worker_id"] or ""
+            else:
+                key = row[2] or row[3] or ""
+
+            if etype in ("subagent_start", "worker_start"):
+                if key:
+                    open_starts[key] = ts
+            elif etype in ("subagent_stop", "worker_end"):
+                if key and key in open_starts:
+                    active_windows.append((open_starts.pop(key), ts))
+    except Exception:
+        pass
+
+    def _is_agent_active_during(gap_start: str, gap_end: str) -> bool:
+        """Return True if any agent/worker window overlaps the gap."""
+        for win_start, win_end in active_windows:
+            # Overlap: window starts before gap ends AND window ends after gap starts
+            if win_start < gap_end and win_end > gap_start:
+                return True
+        return False
+
+    threshold_seconds = gap_minutes * 60
+    segments: list[dict] = []
+    segment_start = sorted_ts[0][0]
+
+    for i in range(len(sorted_ts) - 1):
+        curr_ts, curr_type = sorted_ts[i]
+        next_ts, next_type = sorted_ts[i + 1]
+
+        # Only split on assistant->user transition
+        if curr_type == "assistant" and next_type == "user":
+            try:
+                t1 = datetime.fromisoformat(curr_ts)
+                t2 = datetime.fromisoformat(next_ts)
+                gap = (t2 - t1).total_seconds()
+            except (ValueError, TypeError):
+                continue
+
+            if gap >= threshold_seconds and not _is_agent_active_during(curr_ts, next_ts):
+                segments.append({"start": segment_start, "end": curr_ts})
+                segment_start = next_ts
+
+    # Close the last segment
+    segments.append({"start": segment_start, "end": sorted_ts[-1][0]})
+    return segments
 
 
 def _resolve_project_name(project_path: str) -> str:
@@ -1352,6 +1577,12 @@ def _update_session_stats(session_id: str) -> None:
         existing_cache_creation = row["total_cache_creation_tokens"] if row else 0
         existing_cache_read = row["total_cache_read_tokens"] if row else 0
         existing_msg_count = row["message_count"] if row else 0
+        existing_skills: dict[str, int] = {}
+        if row:
+            try:
+                existing_skills = json.loads(row["skill_usage"] or "{}")
+            except (json.JSONDecodeError, KeyError):
+                pass
 
         parsed = _parse_session_jsonl(session_id, start_line=start_line)
 
@@ -1383,13 +1614,27 @@ def _update_session_stats(session_id: str) -> None:
         new_msg_count = existing_msg_count + parsed["message_count"]
         new_last_line = parsed["last_parsed_line"]
 
+        # Merge skill usage counts
+        merged_skills = dict(existing_skills)
+        for skill, count in parsed.get("skills", {}).items():
+            merged_skills[skill] = merged_skills.get(skill, 0) + count
+        skill_usage_json = json.dumps(merged_skills) if merged_skills else "{}"
+
+        # Compute session segments from message timestamps
+        # message_timestamps always covers all lines (even before start_line)
+        segments = _compute_segments(
+            parsed.get("message_timestamps", []), session_id, conn
+        )
+        segments_json = json.dumps(segments) if segments else "[]"
+
         conn.execute(
             """\
             INSERT INTO session_stats
                 (session_id, custom_name, total_input_tokens, total_output_tokens,
                  total_cache_creation_tokens, total_cache_read_tokens,
-                 message_count, last_parsed_line, project, project_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 message_count, last_parsed_line, project, project_name,
+                 skill_usage, segments)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 custom_name = excluded.custom_name,
                 total_input_tokens = excluded.total_input_tokens,
@@ -1399,12 +1644,14 @@ def _update_session_stats(session_id: str) -> None:
                 message_count = excluded.message_count,
                 last_parsed_line = excluded.last_parsed_line,
                 project = CASE WHEN session_stats.project != '' THEN session_stats.project ELSE excluded.project END,
-                project_name = CASE WHEN session_stats.project_name != '' THEN session_stats.project_name ELSE excluded.project_name END
+                project_name = CASE WHEN session_stats.project_name != '' THEN session_stats.project_name ELSE excluded.project_name END,
+                skill_usage = excluded.skill_usage,
+                segments = excluded.segments
             """,
             (
                 session_id, new_name, new_input, new_output,
                 new_cache_creation, new_cache_read, new_msg_count, new_last_line,
-                project_path, project_name,
+                project_path, project_name, skill_usage_json, segments_json,
             ),
         )
         conn.commit()
@@ -1799,6 +2046,113 @@ def _query_session_stats(session_ids: list[str]) -> dict[str, dict]:
                 pass
 
 
+def _query_session_segments(session_id: str) -> list[dict]:
+    """Return the segments list for a session. Never raises."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+        row = conn.execute(
+            "SELECT segments FROM session_stats WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row and row["segments"]:
+            return json.loads(row["segments"])
+        return []
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_aggregated_session_tokens(session_ids: list[str]) -> dict[str, dict]:
+    """Sum tokens across agent_token_stats and worker_result_stats for sessions.
+
+    Returns ``{session_id: {input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens}}``.
+    Combines orchestrator tokens (from session_stats) with agent and worker tokens.
+    Never raises.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        if not session_ids:
+            return {}
+        conn = _open_readonly()
+        placeholders = ",".join("?" for _ in session_ids)
+
+        result: dict[str, dict] = {}
+
+        # Start with session_stats (orchestrator tokens)
+        rows = conn.execute(
+            f"SELECT session_id, total_input_tokens, total_output_tokens, "
+            f"total_cache_creation_tokens, total_cache_read_tokens "
+            f"FROM session_stats WHERE session_id IN ({placeholders})",
+            session_ids,
+        ).fetchall()
+        for r in rows:
+            result[r["session_id"]] = {
+                "input_tokens": r["total_input_tokens"] or 0,
+                "output_tokens": r["total_output_tokens"] or 0,
+                "cache_creation_tokens": r["total_cache_creation_tokens"] or 0,
+                "cache_read_tokens": r["total_cache_read_tokens"] or 0,
+            }
+
+        # Add agent tokens (non-orchestrator agents)
+        rows = conn.execute(
+            f"SELECT session_id, "
+            f"SUM(total_input_tokens) as inp, SUM(total_output_tokens) as outp, "
+            f"SUM(total_cache_creation_tokens) as cc, SUM(total_cache_read_tokens) as cr "
+            f"FROM agent_token_stats WHERE session_id IN ({placeholders}) "
+            f"AND agent_type != 'orchestrator' "
+            f"GROUP BY session_id",
+            session_ids,
+        ).fetchall()
+        for r in rows:
+            sid = r["session_id"]
+            if sid not in result:
+                result[sid] = {
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                }
+            result[sid]["input_tokens"] += r["inp"] or 0
+            result[sid]["output_tokens"] += r["outp"] or 0
+            result[sid]["cache_creation_tokens"] += r["cc"] or 0
+            result[sid]["cache_read_tokens"] += r["cr"] or 0
+
+        # Add worker tokens
+        rows = conn.execute(
+            f"SELECT session_id, "
+            f"SUM(input_tokens) as inp, SUM(output_tokens) as outp, "
+            f"SUM(cache_creation_tokens) as cc, SUM(cache_read_tokens) as cr "
+            f"FROM worker_result_stats WHERE session_id IN ({placeholders}) "
+            f"GROUP BY session_id",
+            session_ids,
+        ).fetchall()
+        for r in rows:
+            sid = r["session_id"]
+            if sid not in result:
+                result[sid] = {
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                }
+            result[sid]["input_tokens"] += r["inp"] or 0
+            result[sid]["output_tokens"] += r["outp"] or 0
+            result[sid]["cache_creation_tokens"] += r["cc"] or 0
+            result[sid]["cache_read_tokens"] += r["cr"] or 0
+
+        return result
+    except Exception:
+        return {}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _rename_session(session_id: str, name: str) -> None:
     """Update session name in DB and optionally append to JSONL. Never raises."""
     conn: sqlite3.Connection | None = None
@@ -1852,6 +2206,7 @@ def _parse_agent_transcript(transcript_path: str, start_line: int = 0) -> dict:
         "total_cache_read_tokens": 0,
         "message_count": 0,
         "last_parsed_line": start_line,
+        "skills": {},
     }
 
     path = Path(transcript_path)
@@ -1876,17 +2231,33 @@ def _parse_agent_transcript(transcript_path: str, start_line: int = 0) -> dict:
                 entry_type = entry.get("type", "")
                 if entry_type == "assistant":
                     message = entry.get("message", {})
-                    usage = message.get("usage") if isinstance(message, dict) else None
-                    if usage and isinstance(usage, dict):
-                        result["total_input_tokens"] += usage.get("input_tokens", 0)
-                        result["total_output_tokens"] += usage.get("output_tokens", 0)
-                        result["total_cache_creation_tokens"] += usage.get(
-                            "cache_creation_input_tokens", 0
-                        )
-                        result["total_cache_read_tokens"] += usage.get(
-                            "cache_read_input_tokens", 0
-                        )
-                        result["message_count"] += 1
+                    if isinstance(message, dict):
+                        usage = message.get("usage")
+                        if usage and isinstance(usage, dict):
+                            result["total_input_tokens"] += usage.get("input_tokens", 0)
+                            result["total_output_tokens"] += usage.get("output_tokens", 0)
+                            result["total_cache_creation_tokens"] += usage.get(
+                                "cache_creation_input_tokens", 0
+                            )
+                            result["total_cache_read_tokens"] += usage.get(
+                                "cache_read_input_tokens", 0
+                            )
+                            result["message_count"] += 1
+
+                        # Detect skill usage in content blocks
+                        content = message.get("content", [])
+                        if isinstance(content, list):
+                            for block in content:
+                                if (
+                                    isinstance(block, dict)
+                                    and block.get("type") == "tool_use"
+                                    and block.get("name") == "Skill"
+                                ):
+                                    inp = block.get("input", {})
+                                    cmd = inp.get("command", "") if isinstance(inp, dict) else ""
+                                    if cmd:
+                                        skill_name = cmd.split()[0]
+                                        result["skills"][skill_name] = result["skills"].get(skill_name, 0) + 1
 
         result["last_parsed_line"] = total_lines
     except Exception:
@@ -2024,51 +2395,106 @@ def _query_agent_tokens(session_id: str) -> dict[str, dict]:
 # ── Global tool stats ────────────────────────────────────────────────────────
 
 
+def _build_agent_time_ranges(
+    conn: sqlite3.Connection,
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Build per-session list of agent active time ranges.
+
+    CLI PreToolUse hooks don't include agent_type. All tool_use events
+    (orchestrator + agents) share the orchestrator's session_id.  We pair
+    subagent_start / subagent_stop timestamps so callers can resolve which
+    agent was active when a tool_use event fired.
+
+    Returns ``{session_id: [(start_ts, stop_ts, agent_type), ...]}``.
+    """
+    agent_ranges: dict[str, list[tuple[str, str, str]]] = {}
+    range_rows = conn.execute(
+        "SELECT session_id, agent_id, agent_type, timestamp, event_type "
+        "FROM events "
+        "WHERE event_type IN ('subagent_start', 'subagent_stop') "
+        "ORDER BY timestamp"
+    ).fetchall()
+    starts: dict[str, tuple[str, str, str]] = {}  # agent_id -> (ts, type, sid)
+    for rr in range_rows:
+        aid = rr["agent_id"]
+        if rr["event_type"] == "subagent_start":
+            starts[aid] = (rr["timestamp"], _normalize_agent_type(rr["agent_type"]), rr["session_id"])
+        elif rr["event_type"] == "subagent_stop" and aid in starts:
+            start_ts, atype, sid = starts.pop(aid)
+            agent_ranges.setdefault(sid, []).append((start_ts, rr["timestamp"], atype))
+    # Still-running agents (no stop yet)
+    for _aid, (start_ts, atype, sid) in starts.items():
+        agent_ranges.setdefault(sid, []).append((start_ts, "9999-12-31", atype))
+    return agent_ranges
+
+
+def _resolve_tool_agent_type(
+    session_id: str,
+    timestamp: str,
+    agent_ranges: dict[str, list[tuple[str, str, str]]],
+) -> str:
+    """Find which agent was active at *timestamp*, or ``'orchestrator'``."""
+    ranges = agent_ranges.get(session_id)
+    if not ranges:
+        return "orchestrator"
+    for start, stop, atype in ranges:
+        if start <= timestamp <= stop:
+            return atype
+    return "orchestrator"
+
+
+def _aggregate_tool_rows(
+    rows: list,
+    agent_ranges: dict[str, list[tuple[str, str, str]]],
+) -> dict:
+    """Aggregate tool_use rows into ``{agent_types: ..., totals: ...}``."""
+    agent_types: dict[str, dict[str, int]] = {}
+    totals: dict[str, int] = {}
+    supercharge_count = 0
+
+    for row in rows:
+        atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else ""
+        if not atype:
+            atype = _resolve_tool_agent_type(row["session_id"] or "", row["timestamp"] or "", agent_ranges)
+        tool = row["tool_name"]
+
+        agent_types.setdefault(atype, {})
+        agent_types[atype][tool] = agent_types[atype].get(tool, 0) + 1
+        totals[tool] = totals.get(tool, 0) + 1
+
+        if tool == "Bash":
+            try:
+                detail = json.loads(row["detail"]) if row["detail"] else {}
+                command = detail.get("command", "")
+                if "supercharge" in command:
+                    supercharge_count += 1
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+    if supercharge_count > 0:
+        totals["supercharge"] = supercharge_count
+
+    return {"agent_types": agent_types, "totals": totals}
+
+
 def _query_global_tool_stats() -> dict:
     """Return tool usage grouped by agent_type and tool_name.
 
     Returns ``{agent_types: {code: {Bash: 50, ...}, ...}, totals: {Bash: 80, ...}}``.
-    Bash events whose ``detail`` contains a ``"command"`` with "supercharge" are
-    counted under a separate ``supercharge`` key in totals.
     """
     conn: sqlite3.Connection | None = None
     try:
         conn = _open_readonly()
 
+        agent_ranges = _build_agent_time_ranges(conn)
+
         rows = conn.execute(
-            "SELECT agent_type, tool_name, detail, COUNT(*) as count "
+            "SELECT agent_type, session_id, timestamp, tool_name, detail "
             "FROM events "
-            "WHERE event_type = 'tool_use' AND tool_name != '' "
-            "GROUP BY agent_type, tool_name, detail"
+            "WHERE event_type = 'tool_use' AND tool_name != ''"
         ).fetchall()
 
-        agent_types: dict[str, dict[str, int]] = {}
-        totals: dict[str, int] = {}
-        supercharge_count = 0
-
-        for row in rows:
-            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "orchestrator"
-            tool = row["tool_name"]
-            count = row["count"]
-
-            agent_types.setdefault(atype, {})
-            agent_types[atype][tool] = agent_types[atype].get(tool, 0) + count
-            totals[tool] = totals.get(tool, 0) + count
-
-            # Detect supercharge bash calls
-            if tool == "Bash":
-                try:
-                    detail = json.loads(row["detail"]) if row["detail"] else {}
-                    command = detail.get("command", "")
-                    if "supercharge" in command:
-                        supercharge_count += count
-                except (json.JSONDecodeError, TypeError, AttributeError):
-                    pass
-
-        if supercharge_count > 0:
-            totals["supercharge"] = supercharge_count
-
-        return {"agent_types": agent_types, "totals": totals}
+        return _aggregate_tool_rows(rows, agent_ranges)
     except Exception:
         return {"agent_types": {}, "totals": {}}
     finally:
@@ -2282,41 +2708,16 @@ def _query_project_tool_stats(project_path: str) -> dict:
     try:
         conn = _open_readonly()
 
+        agent_ranges = _build_agent_time_ranges(conn)
+
         rows = conn.execute(
-            "SELECT agent_type, tool_name, detail, COUNT(*) as count "
+            "SELECT agent_type, session_id, timestamp, tool_name, detail "
             "FROM events "
-            "WHERE event_type = 'tool_use' AND tool_name != '' AND project = ? "
-            "GROUP BY agent_type, tool_name, detail",
+            "WHERE event_type = 'tool_use' AND tool_name != '' AND project = ?",
             (project_path,),
         ).fetchall()
 
-        agent_types: dict[str, dict[str, int]] = {}
-        totals: dict[str, int] = {}
-        supercharge_count = 0
-
-        for row in rows:
-            atype = _normalize_agent_type(row["agent_type"]) if row["agent_type"] else "orchestrator"
-            tool = row["tool_name"]
-            count = row["count"]
-
-            agent_types.setdefault(atype, {})
-            agent_types[atype][tool] = agent_types[atype].get(tool, 0) + count
-            totals[tool] = totals.get(tool, 0) + count
-
-            # Detect supercharge bash calls
-            if tool == "Bash":
-                try:
-                    detail = json.loads(row["detail"]) if row["detail"] else {}
-                    command = detail.get("command", "")
-                    if "supercharge" in command:
-                        supercharge_count += count
-                except (json.JSONDecodeError, TypeError, AttributeError):
-                    pass
-
-        if supercharge_count > 0:
-            totals["supercharge"] = supercharge_count
-
-        return {"agent_types": agent_types, "totals": totals}
+        return _aggregate_tool_rows(rows, agent_ranges)
     except Exception:
         return {"agent_types": {}, "totals": {}}
     finally:
@@ -2564,6 +2965,146 @@ def _rename_project(project_slug: str, name: str) -> bool:
         return cursor.rowcount > 0
     except Exception:
         return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_worker_stats(worker_ids: list[str]) -> dict[str, dict]:
+    """Batch fetch worker_result_stats for the given worker IDs.
+
+    Returns a dict mapping worker_id to its stats (tokens, duration, cost, etc.).
+    Never raises.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        if not worker_ids:
+            return {}
+        conn = _open_readonly()
+        placeholders = ",".join("?" for _ in worker_ids)
+        rows = conn.execute(
+            f"SELECT * FROM worker_result_stats WHERE worker_id IN ({placeholders})",
+            worker_ids,
+        ).fetchall()
+
+        result: dict[str, dict] = {}
+        for row in rows:
+            result[row["worker_id"]] = {
+                "session_id": row["session_id"],
+                "agent_type": row["agent_type"],
+                "task_uuid": row["task_uuid"],
+                "duration_ms": row["duration_ms"],
+                "duration_api_ms": row["duration_api_ms"],
+                "num_turns": row["num_turns"],
+                "cost_usd": row["cost_usd"],
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "cache_creation_tokens": row["cache_creation_tokens"],
+                "cache_read_tokens": row["cache_read_tokens"],
+                "is_error": bool(row["is_error"]),
+            }
+        return result
+    except Exception:
+        return {}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_session_skills(session_id: str) -> dict[str, int]:
+    """Read skill_usage from session_stats for a session.
+
+    Returns a dict like ``{"pdf": 3, "xlsx": 1}`` or empty dict.
+    Never raises.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+        row = conn.execute(
+            "SELECT skill_usage FROM session_stats WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row and row["skill_usage"]:
+            return json.loads(row["skill_usage"])
+        return {}
+    except Exception:
+        return {}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _query_memory_status() -> list[dict]:
+    """Query recent memory_spawn / memory_end event pairs.
+
+    Returns a list of dicts with status, task_uuid, duration, and timestamps.
+    Pairs events by task_uuid (not session_id) since memory agents emit
+    task_uuid only.  Never raises.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_readonly()
+        rows = conn.execute(
+            "SELECT id, timestamp, event_type, task_uuid, detail "
+            "FROM events "
+            "WHERE event_type IN ('memory_spawn', 'memory_end') "
+            "ORDER BY id DESC LIMIT 50",
+        ).fetchall()
+
+        # Pair memory_end -> memory_spawn by task_uuid
+        ends: dict[str, dict] = {}
+        result: list[dict] = []
+        seen_tasks: set[str] = set()
+
+        for row in rows:
+            tuuid = row["task_uuid"] or ""
+            etype = row["event_type"]
+            ts = row["timestamp"]
+
+            if etype == "memory_end":
+                if tuuid not in ends:
+                    ends[tuuid] = {"timestamp": ts, "detail": row["detail"] or ""}
+            elif etype == "memory_spawn":
+                if tuuid in seen_tasks:
+                    continue
+                seen_tasks.add(tuuid)
+                end_info = ends.get(tuuid)
+                entry: dict = {
+                    "task_uuid": tuuid,
+                    "start": ts,
+                    "end": end_info["timestamp"] if end_info else None,
+                    "status": "completed" if end_info else "running",
+                }
+                if end_info:
+                    try:
+                        start_dt = datetime.fromisoformat(ts)
+                        end_dt = datetime.fromisoformat(end_info["timestamp"])
+                        entry["duration_ms"] = int(
+                            (end_dt - start_dt).total_seconds() * 1000
+                        )
+                    except Exception:
+                        entry["duration_ms"] = None
+                    detail = end_info.get("detail", "")
+                    if detail and "error" in detail.lower():
+                        entry["status"] = "failed"
+                else:
+                    entry["duration_ms"] = None
+                result.append(entry)
+                if len(result) >= 10:
+                    break
+
+        return result
+    except Exception:
+        return []
     finally:
         if conn is not None:
             try:

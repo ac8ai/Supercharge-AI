@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import aclosing
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from supercharge.metrics import _emit
+from supercharge.metrics import _emit, _emit_worker_result
 from supercharge.paths import (
     _ENV_PROJECT_DIR,
     _cli_data_dir,
@@ -126,6 +127,38 @@ def _prepare_worker_file(
     return worker_file
 
 
+def _make_worker_tool_hook(
+    worker_id: str,
+    task_uuid: str,
+    agent_type: str,
+):
+    """Create an async PreToolUse hook that emits tool_use metrics.
+
+    Values are captured via closure so the hook can attribute events correctly
+    (env vars are set on the child process, but the hook runs in the parent).
+    """
+
+    async def _hook(hook_input, match, context):  # noqa: ARG001
+        tool_input = hook_input.get("tool_input", {})
+        # Truncate string values to avoid bloating the metrics DB
+        truncated = {
+            k: (v[:200] if isinstance(v, str) else v)
+            for k, v in tool_input.items()
+        }
+        _emit(
+            "tool_use",
+            session_id=hook_input.get("session_id", ""),
+            worker_id=worker_id,
+            task_uuid=task_uuid,
+            agent_type=agent_type,
+            tool_name=hook_input.get("tool_name", ""),
+            detail=json.dumps(truncated, default=str),
+        )
+        return {}  # Passthrough — no permission decision
+
+    return _hook
+
+
 def _build_options(
     task_dir: Path,
     remaining_depth: int,
@@ -138,8 +171,9 @@ def _build_options(
 
     Deep workers (worker_id set): get can_use_tool callback for path scoping.
     Fast workers (worker_id None): get allowed_tools only (no callback).
+    All workers get PreToolUse hooks for tool tracking metrics.
     """
-    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
     project_root = os.environ.get(_ENV_PROJECT_DIR) or _project_dir()
     perms = _AGENT_PERMISSIONS.get(agent_type, _DEFAULT_PERMS)
@@ -156,6 +190,23 @@ def _build_options(
         tools = perms["fast_tools"]
         can_use_tool_cb = None
 
+    # Resolve task_uuid for hook attribution
+    resolved_task_uuid = _read_frontmatter(task_dir / "task.md").get(
+        "task_uuid", task_dir.name
+    )
+
+    # Register PreToolUse hook for tool tracking on all workers
+    tool_hook = _make_worker_tool_hook(
+        worker_id=worker_id or "",
+        task_uuid=resolved_task_uuid,
+        agent_type=agent_type,
+    )
+    hooks = {
+        "PreToolUse": [
+            HookMatcher(matcher=None, hooks=[tool_hook]),
+        ],
+    }
+
     return ClaudeAgentOptions(
         system_prompt=_build_worker_system_prompt(),
         cwd=str(task_dir),
@@ -165,11 +216,10 @@ def _build_options(
         permission_mode="acceptEdits",
         max_turns=max_turns,
         model=model,
+        hooks=hooks,
         env={
             _ENV_REMAINING: str(remaining_depth - 1),
-            _ENV_TASK_UUID: _read_frontmatter(task_dir / "task.md").get(
-                "task_uuid", task_dir.name
-            ),
+            _ENV_TASK_UUID: resolved_task_uuid,
             _ENV_WORKER_ID: worker_id or "",
             _ENV_PROJECT_DIR: project_root,
             "CLAUDECODE": "",  # Allow nested Claude Code spawn via Agent SDK
@@ -238,6 +288,8 @@ async def _deep_worker_init(
             agent_type=agent_type,
             detail=detail,
         )
+        if result_msg:
+            _emit_worker_result(worker_id, result_msg, agent_type, task_dir.name)
         await client.disconnect()
 
     if not result_msg:
@@ -274,6 +326,9 @@ async def _deep_worker_resume(
         async for message in stream:
             if isinstance(message, ResultMessage):
                 result_msg = message
+
+    if result_msg:
+        _emit_worker_result(worker_id, result_msg, agent_type, task_dir.name)
 
     if not result_msg:
         raise click.ClickException("No result returned from worker")
@@ -335,6 +390,8 @@ async def _fast_worker_init(
             agent_type=agent_type,
             detail=detail,
         )
+        if result_msg:
+            _emit_worker_result(worker_id, result_msg, agent_type, task_dir.name)
 
     if not result_msg:
         raise click.ClickException("No result returned from worker")
@@ -393,6 +450,7 @@ async def _memory_agent_run(task_uuid: str) -> None:
         async with aclosing(query(prompt=prompt, options=options)) as stream:
             async for message in stream:
                 if isinstance(message, ResultMessage):
+                    _emit_worker_result(task_uuid, message, "memory", task_uuid)
                     if message.is_error:
                         print(
                             f"[SuperchargeAI] memory agent error: {message.result}",

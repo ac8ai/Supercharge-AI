@@ -33,3 +33,4 @@ uv tool install -e . --force
 ```
 
 The session_start hook auto-pulls the latest beta on each session.
+Supercharge-AI: @/workspaces/Supercharge-AI/prompts/claude-md.md

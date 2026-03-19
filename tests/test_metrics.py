@@ -466,22 +466,22 @@ class TestMigration4:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert 'projects' in tables
 
-        # Verify version 4 is recorded
+        # Verify all migrations ran
         version = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
-        assert version == 4
+        assert version == 7
 
         # Verify existing event still has empty project (default)
         row = conn.execute('SELECT project FROM events WHERE session_id = "s1"').fetchone()
         assert row[0] == ''
         conn.close()
 
-    def test_schema_version_is_4(self, tmp_path: Path):
-        """After full init, schema version should be 4."""
+    def test_schema_version_is_7(self, tmp_path: Path):
+        """After full init, schema version should be 7."""
         db = tmp_path / 'test.db'
         conn = sqlite3.connect(str(db))
         _init_db(conn)
         version = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
-        assert version == 4
+        assert version == 7
         conn.close()
 
 

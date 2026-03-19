@@ -251,7 +251,8 @@ def _evaluate_pre_tool_use(tool_name: str, tool_input: dict, permission_mode: st
 
     if tool_name in ("Write", "Edit"):
         file_path = tool_input.get("file_path", "")
-        if _SUPERCHARGE_WORKSPACE_MARKER in file_path:
+        # Match both absolute (/.claude/SuperchargeAI/) and relative (.claude/SuperchargeAI/)
+        if _SUPERCHARGE_WORKSPACE_MARKER in file_path or file_path.startswith(".claude/SuperchargeAI/"):
             return _allow(f"{tool_name}: SuperchargeAI workspace file")
         if _check_settings_allowlist(tool_name, tool_input):
             return _allow(f"{tool_name}: matches settings.json allowlist")

@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import subprocess
+
 from supercharge.memory import (
     _STAMP_TYPE,
     _format_stale_folders_task,
@@ -19,6 +21,7 @@ from supercharge.memory import (
     _spawn_background_memory,
     _stamp_status,
     _stamp_transcript,
+    _wait_and_emit,
 )
 from supercharge.paths import _project_memory_dir, _user_methodology_dir
 
@@ -573,7 +576,7 @@ class TestSpawnBackgroundMemory:
         assert result is None
 
     def test_popen_object_is_waited_or_tracked(self, tmp_path: Path):
-        """After _spawn_background_memory(), a daemon thread calls proc.wait() to reap the child."""
+        """After _spawn_background_memory(), a daemon thread calls _wait_and_emit to reap and track."""
         task_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         task_dir = tmp_path / ".claude" / "SuperchargeAI" / "tasks" / "memory" / task_uuid
         task_dir.mkdir(parents=True)
@@ -591,8 +594,13 @@ class TestSpawnBackgroundMemory:
             result = _spawn_background_memory("# Task content", str(tmp_path))
 
         assert result == task_uuid
-        # Verify a daemon thread was started with proc.wait as target
-        mock_thread.assert_called_once_with(target=mock_proc.wait, daemon=True)
+        # Verify a daemon thread was started with _wait_and_emit as target
+        mock_thread.assert_called_once()
+        call_kwargs = mock_thread.call_args[1]
+        assert call_kwargs["target"] == _wait_and_emit
+        assert call_kwargs["args"][0] is mock_proc  # proc
+        assert call_kwargs["args"][1] == task_uuid  # task_uuid
+        assert call_kwargs["daemon"] is True
         mock_thread.return_value.start.assert_called_once()
 
     def test_writes_task_md(self, tmp_path: Path):
@@ -753,3 +761,102 @@ class TestMigrateMethodologyMemory:
         with patch("supercharge.paths._user_methodology_dir", side_effect=OSError("boom")):
             # Should not raise
             _migrate_methodology_memory(str(tmp_path))
+
+
+# ── _wait_and_emit ─────────────────────────────────────────────────────────
+
+
+class TestWaitAndEmit:
+    """Test background memory process wait-and-emit logic."""
+
+    def test_success_exit(self):
+        """Process exits 0 -> emits memory_end with status=success."""
+        mock_proc = patch("supercharge.memory.subprocess.Popen", spec=subprocess.Popen).start()
+        mock_proc = mock_proc.return_value
+        mock_proc.wait.return_value = 0
+        patch.stopall()
+
+        # Create a real mock proc
+        from unittest.mock import MagicMock
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.wait.return_value = 0
+
+        task_uuid = "test-uuid-success"
+        start_time = time.time() - 5.0  # simulate 5 seconds ago
+
+        with patch("supercharge.memory._emit") as mock_emit:
+            _wait_and_emit(proc, task_uuid, start_time)
+
+        proc.wait.assert_called_once_with(timeout=600)
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        assert args[0] == "memory_end"
+        assert kwargs["task_uuid"] == task_uuid
+        detail = json.loads(kwargs["detail"])
+        assert detail["exit_code"] == 0
+        assert detail["status"] == "success"
+        assert "duration_seconds" in detail
+
+    def test_error_exit(self):
+        """Process exits non-zero -> emits memory_end with status=error."""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.wait.return_value = 1
+
+        task_uuid = "test-uuid-error"
+        start_time = time.time() - 2.0
+
+        with patch("supercharge.memory._emit") as mock_emit:
+            _wait_and_emit(proc, task_uuid, start_time)
+
+        proc.wait.assert_called_once_with(timeout=600)
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        assert args[0] == "memory_end"
+        detail = json.loads(kwargs["detail"])
+        assert detail["exit_code"] == 1
+        assert detail["status"] == "error"
+
+    def test_timeout_handling(self):
+        """Process times out -> kills process, emits timeout status."""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.wait.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=600)
+
+        task_uuid = "test-uuid-timeout"
+        start_time = time.time() - 600.0
+
+        with patch("supercharge.memory._emit") as mock_emit:
+            _wait_and_emit(proc, task_uuid, start_time)
+
+        proc.wait.assert_called_once_with(timeout=600)
+        proc.kill.assert_called_once()
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        assert args[0] == "memory_end"
+        detail = json.loads(kwargs["detail"])
+        assert detail["status"] == "timeout"
+        assert detail["timeout_seconds"] == 600
+
+    def test_unexpected_exception(self):
+        """Unexpected exception -> emits error status with message."""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.wait.side_effect = OSError("unexpected failure")
+
+        task_uuid = "test-uuid-exception"
+        start_time = time.time()
+
+        with patch("supercharge.memory._emit") as mock_emit:
+            _wait_and_emit(proc, task_uuid, start_time)
+
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        assert args[0] == "memory_end"
+        detail = json.loads(kwargs["detail"])
+        assert detail["status"] == "error"
+        assert "unexpected failure" in detail["error"]

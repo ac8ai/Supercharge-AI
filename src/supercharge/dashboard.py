@@ -133,6 +133,9 @@ async def _handle_sessions(request: Request) -> JSONResponse:
     session_ids = [s["session_id"] for s in data]
     stats = metrics._query_session_stats(session_ids)
 
+    # Aggregate agent + worker tokens per session for total token counts
+    agg_tokens = metrics._query_aggregated_session_tokens(session_ids)
+
     for session in data:
         sid = session["session_id"]
         ss = stats.get(sid, {})
@@ -141,6 +144,13 @@ async def _handle_sessions(request: Request) -> JSONResponse:
         session["output_tokens"] = ss.get("output_tokens", 0)
         session["cache_creation_tokens"] = ss.get("cache_creation_tokens", 0)
         session["cache_read_tokens"] = ss.get("cache_read_tokens", 0)
+
+        # Aggregated tokens across orchestrator + agents + workers
+        agg = agg_tokens.get(sid, {})
+        session["agg_input_tokens"] = agg.get("input_tokens", 0)
+        session["agg_output_tokens"] = agg.get("output_tokens", 0)
+        session["agg_cache_creation_tokens"] = agg.get("cache_creation_tokens", 0)
+        session["agg_cache_read_tokens"] = agg.get("cache_read_tokens", 0)
 
     return JSONResponse(data)
 
@@ -280,6 +290,33 @@ async def _handle_session_spans(request: Request) -> JSONResponse:
         if span.get("type") == "agent" and span.get("id") in agent_tokens:
             span["tokens"] = agent_tokens[span["id"]]
 
+    # Enrich worker spans with token/duration data from worker_result_stats
+    worker_ids = [s["id"] for s in data if s.get("type") == "worker" and s.get("id")]
+    if worker_ids:
+        worker_stats = metrics._query_worker_stats(worker_ids)
+        for span in data:
+            if span.get("type") == "worker" and span.get("id") in worker_stats:
+                span["worker_stats"] = worker_stats[span["id"]]
+
+    # Include skill usage for the session
+    skills = metrics._query_session_skills(session_id)
+    if skills:
+        # Attach to response — add a synthetic metadata entry
+        # so the frontend can access it without another API call
+        for span in data:
+            if span.get("type") == "agent" and not span.get("is_resume"):
+                span.setdefault("_session_skills", skills)
+                break
+
+    # Include segments for session splitting
+    segments = metrics._query_session_segments(session_id)
+
+    return JSONResponse({"spans": data, "segments": segments})
+
+
+async def _handle_memory_status(request: Request) -> JSONResponse:
+    """Return recent memory agent spawn/completion status."""
+    data = metrics._query_memory_status()
     return JSONResponse(data)
 
 
@@ -511,6 +548,7 @@ def _create_app() -> Starlette:
         Route("/api/stats/tools", _handle_global_tools, methods=["GET"]),
         Route("/api/events", _handle_events, methods=["GET"]),
         Route("/api/events/stream", _handle_events_stream, methods=["GET"]),
+        Route("/api/memory/status", _handle_memory_status, methods=["GET"]),
         Route("/api/browse", _handle_browse, methods=["GET"]),
         Route("/api/browse/memories", _handle_browse_memories, methods=["GET"]),
         Route("/api/browse/memories/{path:path}", _handle_browse_memory_content, methods=["GET"]),

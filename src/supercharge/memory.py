@@ -345,6 +345,35 @@ def _migrate_methodology_memory(project_dir: str) -> None:
 # ── Background spawning ────────────────────────────────────────────────────
 
 
+def _wait_and_emit(proc: subprocess.Popen, task_uuid: str, start_time: float) -> None:
+    """Wait for background memory process and emit result metrics."""
+    try:
+        exit_code = proc.wait(timeout=600)  # 10 min timeout
+        duration_s = time.time() - start_time
+        _emit(
+            "memory_end",
+            task_uuid=task_uuid,
+            detail=json.dumps({
+                "exit_code": exit_code,
+                "duration_seconds": round(duration_s, 2),
+                "status": "success" if exit_code == 0 else "error",
+            }),
+        )
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _emit(
+            "memory_end",
+            task_uuid=task_uuid,
+            detail=json.dumps({"status": "timeout", "timeout_seconds": 600}),
+        )
+    except Exception as exc:
+        _emit(
+            "memory_end",
+            task_uuid=task_uuid,
+            detail=json.dumps({"status": "error", "error": str(exc)}),
+        )
+
+
 def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | None:
     """Create a memory task workspace and spawn a background memory agent.
 
@@ -385,17 +414,30 @@ def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | No
         task_md = task_dir / "task.md"
         task_md.write_text(task_md_content)
 
+        # Set up stderr log file for debugging
+        log_dir = Path.home() / ".claude" / "SuperchargeAI" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"memory-{task_uuid}.log"
+        stderr_fh = log_file.open("w")
+
         # Spawn background process (fully detached)
+        start_time = time.time()
         proc = subprocess.Popen(
             ["supercharge", "memory", "run", task_uuid],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_fh,
             env={**os.environ, "CLAUDE_PROJECT_DIR": project_dir},
         )
-        # Reap child to prevent zombie; daemon thread exits when wait() returns
-        threading.Thread(target=proc.wait, daemon=True).start()
+        # Child inherits the fd; close parent's copy to avoid leak
+        stderr_fh.close()
+        # Wait for process and emit metrics; daemon thread exits when done
+        threading.Thread(
+            target=_wait_and_emit,
+            args=(proc, task_uuid, start_time),
+            daemon=True,
+        ).start()
 
         _emit("memory_spawn", task_uuid=task_uuid, detail="background")
 

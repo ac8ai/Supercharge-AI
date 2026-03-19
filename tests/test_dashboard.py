@@ -752,3 +752,381 @@ class TestProjectEndpoints:
     def test_get_project_sessions_unknown(self, client):
         resp = client.get("/api/projects/unknown-slug/sessions")
         assert resp.status_code == 404
+
+
+# ── Worker stats query tests ─────────────────────────────────────────────────
+
+
+class TestQueryWorkerStats:
+    """Tests for _query_worker_stats()."""
+
+    def test_returns_worker_stats(self, tmp_path):
+        db = _make_db(tmp_path)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO worker_result_stats "
+            "(worker_id, session_id, agent_type, task_uuid, duration_ms, "
+            "duration_api_ms, num_turns, cost_usd, input_tokens, output_tokens, "
+            "cache_creation_tokens, cache_read_tokens, is_error, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("w1", "s1", "code", "t1", 5000, 4000, 3, 0.05,
+             1000, 500, 100, 200, 0, "2026-01-10T10:00:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        from supercharge.metrics import _query_worker_stats
+
+        with _patch_db(tmp_path):
+            result = _query_worker_stats(["w1"])
+
+        assert "w1" in result
+        ws = result["w1"]
+        assert ws["input_tokens"] == 1000
+        assert ws["output_tokens"] == 500
+        assert ws["duration_ms"] == 5000
+        assert ws["cost_usd"] == 0.05
+        assert ws["is_error"] is False
+        assert ws["agent_type"] == "code"
+
+    def test_returns_empty_for_unknown(self, tmp_path):
+        _make_db(tmp_path)
+
+        from supercharge.metrics import _query_worker_stats
+
+        with _patch_db(tmp_path):
+            result = _query_worker_stats(["nonexistent"])
+        assert result == {}
+
+    def test_returns_empty_for_empty_list(self, tmp_path):
+        _make_db(tmp_path)
+
+        from supercharge.metrics import _query_worker_stats
+
+        with _patch_db(tmp_path):
+            result = _query_worker_stats([])
+        assert result == {}
+
+    def test_multiple_workers(self, tmp_path):
+        db = _make_db(tmp_path)
+        conn = sqlite3.connect(str(db))
+        for wid, tokens in [("w1", 100), ("w2", 200)]:
+            conn.execute(
+                "INSERT INTO worker_result_stats "
+                "(worker_id, session_id, agent_type, task_uuid, duration_ms, "
+                "duration_api_ms, num_turns, cost_usd, input_tokens, output_tokens, "
+                "cache_creation_tokens, cache_read_tokens, is_error, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (wid, "s1", "code", "t1", 1000, 800, 1, 0.01,
+                 tokens, tokens // 2, 0, 0, 0, "2026-01-10T10:00:00+00:00"),
+            )
+        conn.commit()
+        conn.close()
+
+        from supercharge.metrics import _query_worker_stats
+
+        with _patch_db(tmp_path):
+            result = _query_worker_stats(["w1", "w2"])
+        assert len(result) == 2
+        assert result["w1"]["input_tokens"] == 100
+        assert result["w2"]["input_tokens"] == 200
+
+
+# ── Session skills query tests ───────────────────────────────────────────────
+
+
+class TestQuerySessionSkills:
+    """Tests for _query_session_skills()."""
+
+    def test_returns_skill_usage(self, tmp_path):
+        db = _make_db(tmp_path)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO session_stats (session_id, skill_usage) VALUES (?, ?)",
+            ("s1", '{"pdf": 3, "xlsx": 1}'),
+        )
+        conn.commit()
+        conn.close()
+
+        from supercharge.metrics import _query_session_skills
+
+        with _patch_db(tmp_path):
+            result = _query_session_skills("s1")
+        assert result == {"pdf": 3, "xlsx": 1}
+
+    def test_returns_empty_for_no_skills(self, tmp_path):
+        db = _make_db(tmp_path)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO session_stats (session_id) VALUES (?)",
+            ("s1",),
+        )
+        conn.commit()
+        conn.close()
+
+        from supercharge.metrics import _query_session_skills
+
+        with _patch_db(tmp_path):
+            result = _query_session_skills("s1")
+        assert result == {}
+
+    def test_returns_empty_for_unknown_session(self, tmp_path):
+        _make_db(tmp_path)
+
+        from supercharge.metrics import _query_session_skills
+
+        with _patch_db(tmp_path):
+            result = _query_session_skills("nonexistent")
+        assert result == {}
+
+
+# ── Memory status endpoint tests ─────────────────────────────────────────────
+
+
+class TestMemoryStatus:
+    """Tests for /api/memory/status endpoint and _query_memory_status()."""
+
+    def test_query_memory_status_completed(self, tmp_path):
+        # task_uuid is column 6 (index 5): ts, event, sid, aid, atype, tuuid, ...
+        rows = [
+            ("2026-01-10T10:00:00+00:00", "memory_spawn", "", "", "", "t1", "", "", "", ""),
+            ("2026-01-10T10:00:05+00:00", "memory_end", "", "", "", "t1", "", "", "", ""),
+        ]
+        _make_db(tmp_path, rows)
+
+        from supercharge.metrics import _query_memory_status
+
+        with _patch_db(tmp_path):
+            result = _query_memory_status()
+
+        assert len(result) == 1
+        assert result[0]["status"] == "completed"
+        assert result[0]["task_uuid"] == "t1"
+        assert result[0]["duration_ms"] == 5000
+
+    def test_query_memory_status_running(self, tmp_path):
+        rows = [
+            ("2026-01-10T10:00:00+00:00", "memory_spawn", "", "", "", "t1", "", "", "", ""),
+        ]
+        _make_db(tmp_path, rows)
+
+        from supercharge.metrics import _query_memory_status
+
+        with _patch_db(tmp_path):
+            result = _query_memory_status()
+
+        assert len(result) == 1
+        assert result[0]["status"] == "running"
+        assert result[0]["duration_ms"] is None
+
+    def test_query_memory_status_empty(self, tmp_path):
+        _make_db(tmp_path)
+
+        from supercharge.metrics import _query_memory_status
+
+        with _patch_db(tmp_path):
+            result = _query_memory_status()
+        assert result == []
+
+    def test_memory_status_endpoint(self, tmp_path):
+        rows = [
+            ("2026-01-10T10:00:00+00:00", "memory_spawn", "", "", "", "t1", "", "", "", ""),
+            ("2026-01-10T10:00:05+00:00", "memory_end", "", "", "", "t1", "", "", "", ""),
+        ]
+        _make_db(tmp_path, rows)
+
+        from supercharge.dashboard import _create_app
+
+        with _patch_db(tmp_path):
+            app = _create_app()
+            client = TestClient(app)
+            resp = client.get("/api/memory/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["status"] == "completed"
+
+
+# ── Aggregated session tokens tests ──────────────────────────────────────────
+
+
+class TestAggregatedSessionTokens:
+    """Tests for _query_aggregated_session_tokens and its use in /api/sessions."""
+
+    def test_aggregates_orchestrator_agent_worker_tokens(self, tmp_path):
+        db = _make_db(tmp_path, _sample_rows())
+        conn = sqlite3.connect(str(db))
+
+        # Session stats (orchestrator tokens)
+        conn.execute(
+            "INSERT INTO session_stats (session_id, total_input_tokens, total_output_tokens, "
+            "total_cache_creation_tokens, total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("s1", 1000, 500, 100, 200, 5, 0),
+        )
+
+        # Agent tokens (non-orchestrator)
+        conn.execute(
+            "INSERT INTO agent_token_stats (agent_id, session_id, agent_type, transcript_path, "
+            "total_input_tokens, total_output_tokens, total_cache_creation_tokens, "
+            "total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("a2", "s1", "code", "", 2000, 1000, 50, 50, 3, 0),
+        )
+
+        # Worker tokens
+        conn.execute(
+            "INSERT INTO worker_result_stats "
+            "(worker_id, session_id, agent_type, task_uuid, duration_ms, "
+            "duration_api_ms, num_turns, cost_usd, input_tokens, output_tokens, "
+            "cache_creation_tokens, cache_read_tokens, is_error, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("w1", "s1", "code", "t1", 1000, 800, 1, 0.01,
+             500, 250, 10, 20, 0, "2026-01-10T10:00:00+00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        from supercharge.metrics import _query_aggregated_session_tokens
+
+        with _patch_db(tmp_path):
+            result = _query_aggregated_session_tokens(["s1"])
+
+        assert "s1" in result
+        agg = result["s1"]
+        # orchestrator: 1000 + agent: 2000 + worker: 500 = 3500
+        assert agg["input_tokens"] == 3500
+        # orchestrator: 500 + agent: 1000 + worker: 250 = 1750
+        assert agg["output_tokens"] == 1750
+        # cache_creation: 100 + 50 + 10 = 160
+        assert agg["cache_creation_tokens"] == 160
+        # cache_read: 200 + 50 + 20 = 270
+        assert agg["cache_read_tokens"] == 270
+
+    def test_excludes_orchestrator_from_agent_sum(self, tmp_path):
+        """Orchestrator tokens from agent_token_stats should not be double-counted."""
+        db = _make_db(tmp_path, _sample_rows())
+        conn = sqlite3.connect(str(db))
+
+        conn.execute(
+            "INSERT INTO session_stats (session_id, total_input_tokens, total_output_tokens, "
+            "total_cache_creation_tokens, total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("s1", 1000, 500, 0, 0, 5, 0),
+        )
+
+        # Orchestrator entry in agent_token_stats (should be excluded from agent sum)
+        conn.execute(
+            "INSERT INTO agent_token_stats (agent_id, session_id, agent_type, transcript_path, "
+            "total_input_tokens, total_output_tokens, total_cache_creation_tokens, "
+            "total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("a1", "s1", "orchestrator", "", 1000, 500, 0, 0, 5, 0),
+        )
+
+        conn.commit()
+        conn.close()
+
+        from supercharge.metrics import _query_aggregated_session_tokens
+
+        with _patch_db(tmp_path):
+            result = _query_aggregated_session_tokens(["s1"])
+
+        agg = result["s1"]
+        # Only orchestrator tokens, no double-counting
+        assert agg["input_tokens"] == 1000
+        assert agg["output_tokens"] == 500
+
+    def test_sessions_endpoint_includes_agg_tokens(self, tmp_path):
+        db = _make_db(tmp_path, _sample_rows())
+        conn = sqlite3.connect(str(db))
+
+        conn.execute(
+            "INSERT INTO session_stats (session_id, total_input_tokens, total_output_tokens, "
+            "total_cache_creation_tokens, total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("s1", 1000, 500, 100, 200, 5, 0),
+        )
+
+        conn.execute(
+            "INSERT INTO agent_token_stats (agent_id, session_id, agent_type, transcript_path, "
+            "total_input_tokens, total_output_tokens, total_cache_creation_tokens, "
+            "total_cache_read_tokens, message_count, last_parsed_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("a2", "s1", "code", "", 2000, 1000, 0, 0, 3, 0),
+        )
+
+        conn.commit()
+        conn.close()
+
+        from supercharge.dashboard import _create_app
+
+        with _patch_db(tmp_path):
+            app = _create_app()
+            client = TestClient(app)
+            resp = client.get("/api/sessions")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        s1 = next(s for s in data if s["session_id"] == "s1")
+        # Orchestrator tokens
+        assert s1["input_tokens"] == 1000
+        # Aggregated tokens: orchestrator 1000 + agent 2000 = 3000
+        assert s1["agg_input_tokens"] == 3000
+
+    def test_empty_ids(self, tmp_path):
+        _make_db(tmp_path)
+
+        from supercharge.metrics import _query_aggregated_session_tokens
+
+        with _patch_db(tmp_path):
+            result = _query_aggregated_session_tokens([])
+        assert result == {}
+
+
+# ── Spans enrichment tests ───────────────────────────────────────────────────
+
+
+class TestSpansEnrichment:
+    """Tests that the /api/sessions/{id}/spans endpoint returns enriched worker data."""
+
+    def test_spans_include_worker_stats(self, tmp_path):
+        rows = [
+            ("2026-01-10T10:00:00+00:00", "subagent_start", "s1", "a1", "code", "", "", "", "", ""),
+            ("2026-01-10T10:00:05+00:00", "subagent_stop", "s1", "a1", "code", "", "", "", "", ""),
+            ("2026-01-10T10:00:01+00:00", "subtask_init", "s1", "", "code", "", "w1", "code:a1", "", ""),
+            ("2026-01-10T10:00:04+00:00", "worker_end", "s1", "", "code", "", "w1", "", "", ""),
+        ]
+        db = _make_db(tmp_path, rows)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO worker_result_stats "
+            "(worker_id, session_id, agent_type, task_uuid, duration_ms, "
+            "duration_api_ms, num_turns, cost_usd, input_tokens, output_tokens, "
+            "cache_creation_tokens, cache_read_tokens, is_error, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("w1", "s1", "code", "t1", 3000, 2000, 2, 0.03,
+             500, 250, 50, 100, 0, "2026-01-10T10:00:04+00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        from supercharge.dashboard import _create_app
+
+        with _patch_db(tmp_path):
+            app = _create_app()
+            client = TestClient(app)
+            resp = client.get("/api/sessions/s1/spans")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "spans" in data
+        assert "segments" in data
+        spans = data["spans"]
+        worker_spans = [s for s in spans if s.get("type") == "worker"]
+        assert len(worker_spans) >= 1
+        ws = worker_spans[0]
+        assert "worker_stats" in ws
+        assert ws["worker_stats"]["input_tokens"] == 500
+        assert ws["worker_stats"]["cost_usd"] == 0.03

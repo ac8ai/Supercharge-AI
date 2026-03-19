@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from supercharge.hooks import (
     _evaluate_pre_tool_use,
     _load_settings_allowlist,
@@ -21,7 +23,19 @@ from supercharge.permissions import _add_user_permissions, _remove_user_permissi
 
 
 class TestEvaluatePreToolUse:
-    """Test the PreToolUse decision logic directly."""
+    """Test the PreToolUse decision logic directly.
+
+    Uses a temporary user config dir to avoid loading real ~/.claude/settings.json
+    permissions (which may include SuperchargeAI entries added by ``supercharge init``).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_allowlist(self, tmp_path):
+        _reset_allowlist_cache()
+        with patch("supercharge.paths._user_config_dir", return_value=tmp_path / "no_user"):
+            with patch.dict("os.environ", {"CLAUDE_PROJECT_DIR": ""}, clear=False):
+                yield
+        _reset_allowlist_cache()
 
     def test_bash_supercharge_command_allowed(self):
         result = _evaluate_pre_tool_use(
@@ -63,6 +77,26 @@ class TestEvaluatePreToolUse:
         result = _evaluate_pre_tool_use(
             "Write",
             {"file_path": "/home/user/project/.claude/SuperchargeAI/tasks/code/abc/task.md"},
+            "default",
+        )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_write_workspace_relative_path_allowed(self):
+        """Relative paths like .claude/SuperchargeAI/... must also be auto-approved."""
+        result = _evaluate_pre_tool_use(
+            "Write",
+            {"file_path": ".claude/SuperchargeAI/tasks/code/abc123/notes.md"},
+            "default",
+        )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_edit_workspace_relative_path_allowed(self):
+        """Relative paths like .claude/SuperchargeAI/... must also be auto-approved."""
+        result = _evaluate_pre_tool_use(
+            "Edit",
+            {"file_path": ".claude/SuperchargeAI/tasks/plan/def456/task.md"},
             "default",
         )
         assert result is not None
