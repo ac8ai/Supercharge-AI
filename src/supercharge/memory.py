@@ -415,7 +415,8 @@ def _spawn_background_memory(task_md_content: str, project_dir: str) -> str | No
         task_md.write_text(task_md_content)
 
         # Set up stderr log file for debugging
-        log_dir = Path.home() / ".claude" / "SuperchargeAI" / "logs"
+        from supercharge.paths import _user_config_dir
+        log_dir = _user_config_dir() / "SuperchargeAI" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"memory-{task_uuid}.log"
         stderr_fh = log_file.open("w")

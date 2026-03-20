@@ -43,7 +43,7 @@ _COLUMNS = (
 
 def _db_path() -> Path:
     """Return path to the global metrics database (user-level)."""
-    return Path.home() / '.claude' / 'SuperchargeAI' / 'metrics.db'
+    return _user_config_dir() / 'SuperchargeAI' / 'metrics.db'
 
 
 def _init_db(conn: sqlite3.Connection) -> None:
@@ -1674,7 +1674,7 @@ def _import_legacy_dbs() -> None:
     any unmitigated legacy metrics.db found there.
     """
     try:
-        projects_dir = Path.home() / '.claude' / 'projects'
+        projects_dir = _user_config_dir() / 'projects'
         if not projects_dir.is_dir():
             return
 

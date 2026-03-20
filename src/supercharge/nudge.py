@@ -13,7 +13,7 @@ import shutil
 import time
 from pathlib import Path
 
-from supercharge.paths import _read_frontmatter
+from supercharge.paths import _read_frontmatter, _user_config_dir
 
 _LOCK_FILENAME = ".contribution-nudge-lock"
 _STALE_THRESHOLD_SECONDS = 24 * 60 * 60
@@ -21,7 +21,7 @@ _STALE_THRESHOLD_SECONDS = 24 * 60 * 60
 
 def _nudge_lock_path() -> Path:
     """Return the path to the contribution nudge lock file."""
-    return Path.home() / ".claude" / "SuperchargeAI" / _LOCK_FILENAME
+    return _user_config_dir() / "SuperchargeAI" / _LOCK_FILENAME
 
 
 def _check_gh_available() -> bool:

@@ -27,14 +27,14 @@ except ImportError as _exc:
     ) from _exc
 
 from supercharge import browse, metrics, tree
-from supercharge.paths import _find_task_dir, _project_dir
+from supercharge.paths import _find_task_dir, _project_dir, _user_config_dir
 
 # ── PID file management ─────────────────────────────────────────────────────
 
 
 def _pidfile_path() -> Path:
     """Return the path to the global dashboard PID file (user-level)."""
-    return Path.home() / ".claude" / "SuperchargeAI" / "dashboard.pid"
+    return _user_config_dir() / "SuperchargeAI" / "dashboard.pid"
 
 
 def _read_pidfile() -> tuple[int, int] | None:
