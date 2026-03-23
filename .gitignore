@@ -36,6 +36,8 @@
 !README.md
 !.claude/
 !.claude/CLAUDE.md
+!.claude/skills/
+!.claude/skills/**
 !LICENSE
 
 **/__pycache__/
