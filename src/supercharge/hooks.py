@@ -170,13 +170,45 @@ def _deny(reason: str) -> dict:
     }
 
 
+def _has_project_write_permissions() -> bool:
+    """Check if the settings allowlist covers Write and Edit for project files.
+
+    Returns True if the allowlist contains patterns that would match Write/Edit
+    calls to arbitrary project paths (not just .claude/SuperchargeAI/).
+    This is needed because Claude Code subagents don't inherit settings.json
+    permissions (upstream bugs #18950, #22665, #28584), so our PreToolUse hook
+    must auto-approve writes. Without broad Write/Edit in the allowlist, the
+    hook returns None (pass-through), which silently fails for subagents.
+    """
+    allowlist = _load_settings_allowlist()
+    has_write = False
+    has_edit = False
+    for pattern in allowlist:
+        m = _ALLOWLIST_ENTRY_RE.match(pattern)
+        if not m:
+            continue
+        tool = m.group(1)
+        param = m.group(2)
+        if tool == "Write":
+            # Bare "Write" covers all paths; any glob covering project files also works
+            # (but .claude/SuperchargeAI/** is NOT sufficient for project writes)
+            if param is None or (param and not param.startswith(".claude/SuperchargeAI")):
+                has_write = True
+        elif tool == "Edit":
+            if param is None or (param and not param.startswith(".claude/SuperchargeAI")):
+                has_edit = True
+    return has_write and has_edit
+
+
 def _evaluate_task_call(tool_input: dict, permission_mode: str) -> dict | None:
     """Evaluate a Task tool call for SuperchargeAI workspace enforcement.
 
     Returns allow if the subagent is ours and the prompt references the workspace.
     Returns deny if the subagent is ours but the workspace path is missing.
-    Returns deny if a project-writing agent (code/document) is launched in background
-    without sufficient permissions -- the orchestrator should run it in the foreground.
+    Returns deny if a project-writing agent (code/document) is launched without
+    sufficient permissions -- either in background (can't prompt) or in foreground
+    when the settings allowlist doesn't cover Write/Edit (upstream bug: subagents
+    don't inherit settings.json permissions, so our hook is the only path).
     Returns None (pass-through) for non-SuperchargeAI subagents.
     """
     subagent_type = tool_input.get("subagent_type", "")
@@ -186,26 +218,42 @@ def _evaluate_task_call(tool_input: dict, permission_mode: str) -> dict | None:
     agent_type = subagent_type.removeprefix("supercharge-ai:")
     run_in_background = tool_input.get("run_in_background", False)
 
-    # Reject background agents that write project files when permissions
-    # require user approval.  These agents would silently fail on every
-    # Write/Edit outside .claude/SuperchargeAI/ because the user cannot
-    # approve prompts for background tasks.  Direct the orchestrator to
-    # run the agent in the foreground instead.
+    # Reject project-writing agents when they won't be able to Write/Edit.
+    #
+    # Background: always fails (can't prompt the user at all).
+    # Foreground: also fails unless the settings allowlist covers Write/Edit,
+    # because subagents don't inherit settings.json permissions (upstream
+    # bugs #18950, #22665, #28584). Our PreToolUse hook mirrors the allowlist,
+    # but only if the entries exist. Without them, the hook returns None
+    # (pass-through) and the subagent's permission prompt silently fails.
     #
     # bypassPermissions = --dangerously-skip-permissions flag
     # dontAsk           = auto-approve mode (no user prompts)
+    # acceptEdits       = auto-approve Write/Edit (Bash still needs prompts)
     _PROJECT_WRITERS = {"code", "document"}
     _AUTONOMOUS_MODES = {"bypassPermissions", "dontAsk"}
-    if (
-        agent_type in _PROJECT_WRITERS
-        and run_in_background
-        and permission_mode not in _AUTONOMOUS_MODES
-    ):
-        return _deny(
-            f"Task: {agent_type} agent writes project files and cannot run in "
-            f"the background under permission mode '{permission_mode}'. "
-            f"Run it in the foreground so the user can approve file writes."
-        )
+    if agent_type in _PROJECT_WRITERS and permission_mode not in _AUTONOMOUS_MODES:
+        # Background: always deny (can't prompt for Bash, even acceptEdits
+        # only auto-approves Write/Edit but not Bash)
+        if run_in_background:
+            return _deny(
+                f"Task: {agent_type} agent writes project files and cannot run in "
+                f"the background under permission mode '{permission_mode}'. "
+                f"Run it in the foreground so the user can approve file writes, "
+                f"or add 'Write' and 'Edit' to settings.json permissions.allow."
+            )
+        # Foreground: acceptEdits auto-approves Write/Edit at the Claude Code
+        # level (even for subagents), so the agent can work. But in default
+        # mode, subagents can't inherit settings.json permissions — check if
+        # our hook workaround (allowlist mirroring) can cover the gap.
+        if permission_mode != "acceptEdits" and not _has_project_write_permissions():
+            return _deny(
+                f"Task: {agent_type} agent needs Write/Edit for project files, but "
+                f"the settings.json allowlist doesn't cover them. Subagents can't "
+                f"inherit permission prompts (Claude Code bugs #18950, #22665, #28584). "
+                f"Either add 'Write' and 'Edit' to ~/.claude/settings.json "
+                f"permissions.allow, or handle file writes directly in the orchestrator."
+            )
 
     prompt = tool_input.get("prompt", "")
     if _SUPERCHARGE_WORKSPACE_MARKER in prompt:

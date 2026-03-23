@@ -11,6 +11,7 @@ import pytest
 
 from supercharge.hooks import (
     _evaluate_pre_tool_use,
+    _has_project_write_permissions,
     _load_settings_allowlist,
     _reset_allowlist_cache,
     _tool_matches_pattern,
@@ -124,11 +125,12 @@ class TestEvaluatePreToolUse:
         assert result is None
 
     def test_task_supercharge_agent_with_workspace_allowed(self):
+        """Non-writing agent (plan) with workspace path is allowed."""
         result = _evaluate_pre_tool_use(
             "Task",
             {
-                "subagent_type": "supercharge-ai:code",
-                "prompt": "Work in /home/user/project/.claude/SuperchargeAI/tasks/code/abc/",
+                "subagent_type": "supercharge-ai:plan",
+                "prompt": "Work in /home/user/project/.claude/SuperchargeAI/tasks/plan/abc/",
             },
             "default",
         )
@@ -231,8 +233,12 @@ class TestBackgroundAgentRejection:
         assert result is not None
         assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
 
-    def test_code_foreground_default_allowed(self):
-        """Foreground agents are not rejected regardless of permission mode."""
+    def test_code_foreground_default_no_perms_denied(self):
+        """Foreground code agents denied in default mode without Write/Edit permissions.
+
+        This is the core fix for BUG_REPORT-permissions.md — subagents can't inherit
+        settings.json permissions, so without allowlist coverage they fail silently.
+        """
         result = _evaluate_pre_tool_use(
             "Task",
             {
@@ -243,7 +249,8 @@ class TestBackgroundAgentRejection:
             "default",
         )
         assert result is not None
-        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "settings.json" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_research_background_default_not_rejected(self):
         """Non-project-writing agents pass the background check."""
@@ -273,7 +280,7 @@ class TestBackgroundAgentRejection:
         assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
 
     def test_code_background_accept_edits_denied(self):
-        """acceptEdits still requires prompts for non-edit operations (Bash)."""
+        """acceptEdits still requires prompts for non-edit operations (Bash) in background."""
         result = _evaluate_pre_tool_use(
             "Task",
             {
@@ -285,6 +292,207 @@ class TestBackgroundAgentRejection:
         )
         assert result is not None
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_code_foreground_accept_edits_allowed(self):
+        """acceptEdits auto-approves Write/Edit, so foreground code agents work."""
+        result = _evaluate_pre_tool_use(
+            "Task",
+            {
+                "subagent_type": "supercharge-ai:code",
+                "prompt": self._WORKSPACE_PROMPT,
+                "run_in_background": False,
+            },
+            "acceptEdits",
+        )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+# ── foreground agent permission gap (bug report) ────────────────────────────
+
+
+class TestForegroundPermissionGap:
+    """Foreground project-writing agents are denied when settings allowlist
+    doesn't cover Write/Edit for project files — the core bug from the
+    BUG_REPORT-permissions.md report. Subagents can't inherit settings.json
+    permissions, so without allowlist entries our hook can't approve writes."""
+
+    _WORKSPACE_PROMPT = "Work in /project/.claude/SuperchargeAI/tasks/code/abc/"
+
+    def setup_method(self):
+        _reset_allowlist_cache()
+
+    def teardown_method(self):
+        _reset_allowlist_cache()
+
+    def _with_allowlist(self, patterns: list[str]):
+        return patch("supercharge.hooks._load_settings_allowlist", return_value=patterns)
+
+    def test_code_foreground_no_write_perms_denied(self):
+        """Code agent denied when allowlist has no Write/Edit for project files."""
+        with self._with_allowlist(["Write(.claude/SuperchargeAI/**)", "Edit(.claude/SuperchargeAI/**)"]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:code",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "default",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "settings.json" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_document_foreground_no_write_perms_denied(self):
+        """Document agent denied when allowlist has no Write/Edit for project files."""
+        with self._with_allowlist([]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:document",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "default",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_code_foreground_with_bare_write_edit_allowed(self):
+        """Code agent allowed when allowlist has bare Write and Edit."""
+        with self._with_allowlist(["Write", "Edit"]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:code",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "default",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_code_foreground_with_glob_write_edit_allowed(self):
+        """Code agent allowed when allowlist has project-covering globs."""
+        with self._with_allowlist(["Write(src/**)", "Edit(src/**)"]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:code",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "default",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_code_foreground_only_write_no_edit_denied(self):
+        """Denied when allowlist has Write but not Edit."""
+        with self._with_allowlist(["Write"]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:code",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "default",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_research_foreground_no_write_perms_allowed(self):
+        """Research agent doesn't need Write/Edit for project files — not blocked."""
+        with self._with_allowlist([]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:research",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "default",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_code_foreground_bypass_permissions_allowed(self):
+        """bypassPermissions skips the allowlist check entirely."""
+        with self._with_allowlist([]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:code",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "bypassPermissions",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_code_foreground_dontask_allowed(self):
+        """dontAsk mode skips the allowlist check."""
+        with self._with_allowlist([]):
+            result = _evaluate_pre_tool_use(
+                "Task",
+                {
+                    "subagent_type": "supercharge-ai:code",
+                    "prompt": self._WORKSPACE_PROMPT,
+                    "run_in_background": False,
+                },
+                "dontAsk",
+            )
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+# ── _has_project_write_permissions ──────────────────────────────────────────
+
+
+class TestHasProjectWritePermissions:
+    """Test the allowlist check for project-level Write/Edit coverage."""
+
+    def setup_method(self):
+        _reset_allowlist_cache()
+
+    def teardown_method(self):
+        _reset_allowlist_cache()
+
+    def _with_allowlist(self, patterns: list[str]):
+        return patch("supercharge.hooks._load_settings_allowlist", return_value=patterns)
+
+    def test_bare_write_edit(self):
+        with self._with_allowlist(["Write", "Edit"]):
+            assert _has_project_write_permissions() is True
+
+    def test_only_workspace_globs(self):
+        with self._with_allowlist(["Write(.claude/SuperchargeAI/**)", "Edit(.claude/SuperchargeAI/**)"]):
+            assert _has_project_write_permissions() is False
+
+    def test_project_globs(self):
+        with self._with_allowlist(["Write(src/**)", "Edit(src/**)"]):
+            assert _has_project_write_permissions() is True
+
+    def test_empty_allowlist(self):
+        with self._with_allowlist([]):
+            assert _has_project_write_permissions() is False
+
+    def test_write_only(self):
+        with self._with_allowlist(["Write"]):
+            assert _has_project_write_permissions() is False
+
+    def test_edit_only(self):
+        with self._with_allowlist(["Edit"]):
+            assert _has_project_write_permissions() is False
+
+    def test_mixed_workspace_and_project(self):
+        """Write covers project, Edit only covers workspace → False."""
+        with self._with_allowlist(["Write", "Edit(.claude/SuperchargeAI/**)"]):
+            assert _has_project_write_permissions() is False
 
 
 # ── _add_user_permissions / _remove_user_permissions ────────────────────────
