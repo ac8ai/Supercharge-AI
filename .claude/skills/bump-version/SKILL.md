@@ -16,14 +16,15 @@ Version is tracked across 3 files (pyproject.toml, plugin.json, marketplace.json
    bash scripts/bump_version.sh $ARGUMENTS
    ```
 
-2. If the script succeeds, commit and tag:
+2. If the script succeeds, commit, tag, and push:
    ```bash
    git add pyproject.toml .claude-plugin/plugin.json .claude-plugin/marketplace.json uv.lock
    git commit -m "Bump version to $ARGUMENTS"
    git tag v$ARGUMENTS
+   git push && git push origin v$ARGUMENTS
    ```
 
-3. Do NOT push unless the user explicitly asks.
+3. After pushing, confirm to the user that the tag was pushed and the publish workflow should trigger on GitHub Actions.
 
 ## Version format (PEP 440)
 
